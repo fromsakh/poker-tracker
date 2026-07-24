@@ -145,7 +145,7 @@ const SUITS = ["♠","♥","♦","♣"];
 const RED_SUITS = ["♥","♦"];
 
 let state = {
-  config: { seats: Array.from({length:9},(_,i)=>({id:i+1,name:"Игрок "+(i+1),active:i<9,isMe:false,stack:""})), buttonSeat:1, blindLevel:"" },
+  config: { seats: Array.from({length:9},(_,i)=>({id:i+1,name:"Игрок "+(i+1),active:i<9,isMe:false,stack:""})), buttonSeat:1, blindLevel:"", ante:0, inputChips:true },
   hands: [],
   current: null,
   tab: 'setup',
@@ -259,11 +259,36 @@ function fmtNum(n){
   n = Math.round(n*100)/100;
   return (n>0?"+":"") + (Number.isInteger(n)?n:n.toFixed(1));
 }
+// Размер BB в фишках из строки уровня, напр. "100/200" -> 200, "100/200/200" -> 200
+function bbChips(){
+  const src = (state.current && state.current.blindLevel) || state.config.blindLevel || '';
+  const nums = String(src).match(/\d+/g);
+  if(!nums || !nums.length) return null;
+  const v = nums.length===1 ? parseInt(nums[0]) : parseInt(nums[1]);
+  return (v>0) ? v : null;
+}
+function chipsToBB(chips){
+  const bb = bbChips();
+  if(!bb) return null;
+  return Math.round((chips/bb)*10)/10;
+}
+function bbToChips(bbAmt){
+  const bb = bbChips();
+  if(!bb) return null;
+  return Math.round(bbAmt*bb);
+}
 
 // ---------- hand lifecycle ----------
 function startHand(){
   const built = buildHandSeats(state.config);
   if(!built){ alertBanner("Нужно минимум 2 активных игрока за столом."); return; }
+  // post blinds (in BB): SB = 0.5, BB = 1
+  const sc = {};
+  const s = built.seats;
+  if(s.length===2){ sc[s[0].id]=0.5; sc[s[1].id]=1; }
+  else { sc[s[1].id]=0.5; sc[s[2].id]=1; }
+  const anteTotal = (parseFloat(state.config.ante)||0);
+  const bbSeatId = (s.length===2) ? s[1].id : s[2].id;
   state.current = {
     id: Date.now(),
     createdAt: new Date().toISOString(),
@@ -271,13 +296,17 @@ function startHand(){
     blindLevel: state.config.blindLevel,
     seats: built.seats,
     order: built.order,
-    streetIdx: 0, // 0 preflop 1 flop 2 turn 3 river
+    streetIdx: 0,
     streets: {preflop:[], flop:[], turn:[], river:[]},
     board: {flop:[null,null,null], turn:null, river:null},
-    contrib: {}, // cumulative committed BB per seat
-    streetContrib: {}, // this street only
+    ante: anteTotal,
+    anteBy: anteTotal>0 ? bbSeatId : null,
+    contrib: {},
+    streetContrib: sc,
+    blindsPosted: {...sc},
     myCards: [null,null],
-    openBet: {} // seatId currently in "entering size" mode
+    showdown: {},
+    openBet: {}
   };
   state.tab = 'hand';
   render();
@@ -310,7 +339,9 @@ function undoAction(seatId){
   if(idx>-1){
     const removed = arr.splice(idx,1)[0];
     if(removed.action==='Пас'){ seatById(seatId).folded=false; }
-    delete state.current.streetContrib[seatId];
+    const blind = state.current.blindsPosted[seatId];
+    if(state.current.streetIdx===0 && blind){ state.current.streetContrib[seatId] = blind; }
+    else { delete state.current.streetContrib[seatId]; }
   }
   render();
 }
@@ -328,7 +359,7 @@ function cancelHand(){
   render();
 }
 function potTotal(){
-  let sum = 0;
+  let sum = state.current.ante || 0;
   for(const v of Object.values(state.current.contrib)) sum+=v;
   for(const v of Object.values(state.current.streetContrib)) sum+=v;
   return sum;
@@ -358,7 +389,8 @@ async function saveHand(){
   const mySeat = c.seats.find(s=>s.isMe);
   let myResult = null;
   if(mySeat){
-    const myContrib = c.contrib[mySeat.id]||0;
+    let myContrib = c.contrib[mySeat.id]||0;
+    if(c.anteBy === mySeat.id) myContrib += (c.ante||0);
     if(winners.includes(mySeat.id)){
       myResult = (finishForm.pot/winners.length) - myContrib;
     } else {
@@ -374,6 +406,13 @@ async function saveHand(){
       river: cardStr(c.board.river)
     },
     myCards: (cardStr(c.myCards[0]) && cardStr(c.myCards[1])) ? [cardStr(c.myCards[0]), cardStr(c.myCards[1])] : null,
+    showdown: Object.entries(c.showdown).reduce((acc,[sid,cards])=>{
+      const a = cardStr(cards[0]), b = cardStr(cards[1]);
+      if(a && b){ const seat = c.seats.find(s=>s.id===+sid); acc[sid] = {name: seat?seat.name:sid, cards:[a,b]}; }
+      return acc;
+    }, {}),
+    ante: c.ante,
+    anteBy: c.anteBy,
     pot: finishForm.pot,
     winners: winners.map(id=>({id, name: seatById(id).name})),
     note: finishForm.note,
@@ -425,8 +464,11 @@ function renderNav(){
 }
 
 function renderSetup(){
-  let h = '<div class="card"><label>Уровень блайндов</label>';
-  h += `<input type="text" id="blindLevel" value="${escAttr(state.config.blindLevel)}" placeholder="напр. 100/200"></div>`;
+  let h = '<div class="card"><div class="grid2">';
+  h += `<div><label>Уровень блайндов</label><input type="text" id="blindLevel" value="${escAttr(state.config.blindLevel)}" placeholder="напр. 100/200"></div>`;
+  h += `<div><label>Анте от BB (в BB)</label><input type="number" id="anteInput" step="0.1" inputmode="decimal" value="${escAttr(String(state.config.ante||''))}" placeholder="1"></div>`;
+  h += '</div><div class="sub" style="font-size:11px; color:var(--text-faint); margin-top:6px;">Блайнды (0.5 + 1 BB) кладутся автоматически. При анте на большом блайнде размером в блайнд поставьте <b>1</b> — игрок на BB положит в банк 2 BB, а колл для остальных останется 1 BB.</div>';
+  h += `<div class="divider"></div><div class="row between"><div><div style="font-size:13px;">Вводить ставки в фишках</div><div style="font-size:11px; color:var(--text-faint);">${bbChips()?'1 BB = '+bbChips()+' фишек':'укажите уровень блайндов выше'}</div></div><div class="toggle ${state.config.inputChips?'on':''}" data-chipmode="1"><div class="dot"></div></div></div></div>`;
   h += '<div class="card"><label>Игроки за столом</label>';
   state.config.seats.forEach(s=>{
     h += `<div class="seat-row">
@@ -460,7 +502,18 @@ function renderHandTab(){
     return `<div class="st ${cls}">${STREET_LABELS[k]}</div>`;
   }).join('') + '</div>';
 
-  h += `<div class="pot-bar"><span>Банк</span><span class="amt">${fmtNum(potTotal()).replace('+','')} BB</span></div>`;
+  const streetSum = Object.values(c.streetContrib).reduce((a,b)=>a+b,0);
+  const potBefore = potTotal() - streetSum;
+  const toCallNow = maxStreetBet();
+  const potChips = bbToChips(potTotal());
+  h += `<div class="pot-bar">
+    <div><div style="font-size:10px; color:var(--text-dim);">БАНК ВСЕГО</div>
+         <span class="amt">${(Math.round(potTotal()*10)/10)} BB</span>
+         ${potChips?`<div style="font-size:11px; color:var(--text-dim);">${potChips} фишек</div>`:''}</div>
+    <div style="text-align:right; font-size:11px; color:var(--text-dim); line-height:1.5;">
+      <div>до улицы: ${Math.round(potBefore*10)/10}${c.ante?' (вкл. анте BB '+c.ante+')':''}</div>
+      <div>на улице: ${Math.round(streetSum*10)/10}${toCallNow?' · колл '+toCallNow+(bbToChips(toCallNow)?' ('+bbToChips(toCallNow)+')':''):''}</div>
+    </div></div>`;
 
   // my cards
   const mySeat = c.seats.find(s=>s.isMe);
@@ -496,7 +549,7 @@ function renderHandTab(){
     if(c.openBet[id]){
       h += renderSizePicker(id);
     } else if(acted){
-      h += `<div class="acted-chip" data-editact="${id}"><span class="lbl">${acted.action}${acted.amount?' — '+acted.amount+' BB':''}</span><span class="edit">изменить ✎</span></div>`;
+      h += `<div class="acted-chip" data-editact="${id}"><span class="lbl">${acted.action}${acted.amount?' — '+acted.amount+' BB'+(bbToChips(acted.amount)?' ('+bbToChips(acted.amount)+')':''):''}</span><span class="edit">изменить ✎</span></div>`;
     } else {
       const toCall = maxStreetBet();
       h += `<div class="act-row">
@@ -540,30 +593,53 @@ function boardSlotOrSelect(key, val, editable){
 }
 function renderSizePicker(seatId){
   const bb = maxStreetBet();
-  return `<div class="size-picker">
-    <div class="row">
-      <button class="btn small" data-quickbet="${seatId}:${Math.max(2,bb*2)}">2x</button>
-      <button class="btn small" data-quickbet="${seatId}:${Math.max(3,bb*3)}">3x</button>
-      <button class="btn small" data-quickbet="${seatId}:${(potTotal()).toFixed(1)}">Пот</button>
-      <input type="number" id="customBet-${seatId}" placeholder="BB" step="0.5">
-      <button class="btn small primary" data-custombet="${seatId}">✓</button>
-    </div>
-    <button class="btn small ghost block" data-closebet="${seatId}">Отмена</button>
-  </div>`;
+  const mode = state.current.openBet[seatId];
+  const potNow = potTotal();
+  const chipMode = state.config.inputChips && bbChips();
+  const q = [
+    ['2x', Math.max(2, Math.round(bb*2*10)/10)],
+    ['3x', Math.max(3, Math.round(bb*3*10)/10)],
+    ['Пот', Math.round(potNow*10)/10]
+  ];
+  let h = `<div class="size-picker">`;
+  h += `<div style="font-size:10px; color:var(--text-dim); margin-bottom:6px;">${mode} — сколько всего в этой улице${chipMode?', в фишках (1 BB = '+bbChips()+')':' (BB)'}</div>`;
+  h += `<div class="row" style="flex-wrap:wrap;">`;
+  q.forEach(([lbl,val])=>{
+    const chips = bbToChips(val);
+    h += `<button class="btn small" data-quickbet="${seatId}:${val}">${lbl}<br><span style="font-size:9px; color:var(--text-dim);">${chipMode?chips:val+' BB'}</span></button>`;
+  });
+  h += `<input type="number" id="customBet-${seatId}" placeholder="${chipMode?'фишки':'BB'}" step="${chipMode?'1':'0.5'}" inputmode="numeric" enterkeyhint="done" style="width:84px;">`;
+  h += `<button class="btn small primary" data-custombet="${seatId}">✓</button>`;
+  h += `</div><div id="conv-${seatId}" style="font-size:11px; color:var(--gold); min-height:14px; margin:2px 0 6px;"></div>`;
+  h += `<button class="btn small ghost block" data-closebet="${seatId}">Отмена</button></div>`;
+  return h;
 }
 
 function renderFinishForm(){
   const c = state.current;
   const rem = remainingSeats();
   let h = '<div class="card"><label>Итоговый банк (BB)</label>';
-  h += `<input type="number" id="finalPot" value="${finishForm.pot}" step="0.5"></div>`;
+  h += `<input type="number" id="finalPot" value="${finishForm.pot}" step="0.5" inputmode="decimal" enterkeyhint="done">`;
+  h += `<div style="font-size:11px; color:var(--text-dim); margin-top:4px;">${bbToChips(finishForm.pot)?'≈ '+bbToChips(finishForm.pot)+' фишек — сверьте с банком на столе':'посчитан автоматически'}</div></div>`;
   h += '<div class="card"><label>Победитель(и)</label>';
   rem.forEach(s=>{
     const on = finishForm.winners.includes(s.id);
     h += `<div class="seat-row"><div class="toggle ${on?'on':''}" data-winner="${s.id}"><div class="dot"></div></div><span>${escHtml(s.name)} (${s.position})</span></div>`;
   });
   h += '</div>';
-  h += '<div class="card"><label>Заметка</label><input type="text" id="handNote" placeholder="Ключевое решение, вывод…" value="'+escAttr(finishForm.note)+'"></div>';
+  if(rem.length>1 || finishForm.showAll){
+    h += '<div class="card"><label>Карты на шоудауне (если показали)</label>';
+    rem.forEach(s=>{
+      if(s.isMe) return;
+      const sd = c.showdown[s.id] || [null,null];
+      h += `<div style="margin-bottom:8px;"><div style="font-size:12px; color:var(--text-dim); margin-bottom:4px;">${escHtml(s.name)} (${s.position})</div><div class="board-cards">`;
+      h += cardSelectPair('sd'+s.id+'_0', sd[0]);
+      h += cardSelectPair('sd'+s.id+'_1', sd[1]);
+      h += '</div></div>';
+    });
+    h += '<div class="sub" style="font-size:11px; color:var(--text-faint);">Оставьте пустым, если карты не открывались.</div></div>';
+  }
+  h += '<div class="card"><label>Заметка</label><input type="text" id="handNote" placeholder="Ключевое решение, вывод…" enterkeyhint="done" value="'+escAttr(finishForm.note)+'"></div>';
   h += '<div class="actions-footer"><button class="btn ghost" id="backToHand">Назад</button><button class="btn gold" id="confirmSave" style="flex:1;">Сохранить раздачу</button></div>';
   return h;
 }
@@ -589,6 +665,9 @@ function renderHistory(){
         }
       });
       if(hand.note) h += `<div style="margin-top:6px;">Заметка: ${escHtml(hand.note)}</div>`;
+      if(hand.showdown && Object.keys(hand.showdown).length){
+        h += '<div style="margin-top:6px;">Вскрылись: ' + Object.values(hand.showdown).map(v=>`<b>${escHtml(v.name)}</b> ${v.cards.join(' ')}`).join(' · ') + '</div>';
+      }
       h += '</div></div>';
     }
   });
@@ -668,7 +747,18 @@ function escAttr(s){ return escHtml(s).replace(/"/g,'&quot;'); }
 // ---------- event handling ----------
 function attachHandlers(){
   const app = document.getElementById('app');
+  // Enter / "Готово" closes the mobile keyboard instead of leaving it stuck open
+  app.querySelectorAll('input').forEach(inp=>{
+    if(!inp.getAttribute('enterkeyhint')) inp.setAttribute('enterkeyhint','done');
+    inp.addEventListener('keydown', ev=>{
+      if(ev.key==='Enter'){ ev.preventDefault(); inp.blur(); }
+    });
+  });
   app.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ state.tab=b.dataset.tab; render(); });
+  app.addEventListener('touchstart', ev=>{
+    const ae = document.activeElement;
+    if(ae && (ae.tagName==='INPUT'||ae.tagName==='TEXTAREA') && ev.target!==ae) ae.blur();
+  }, {passive:true});
   app.querySelectorAll('[data-dismiss-banner]').forEach(b=>b.onclick=()=>{ bannerMsg=null; bannerSticky=false; render(); });
 
   const startBtn = document.getElementById('startHandBtn') || document.getElementById('startHandBtn2');
@@ -677,6 +767,11 @@ function attachHandlers(){
   // setup
   const bl = document.getElementById('blindLevel');
   if(bl) bl.onchange = ()=>{ state.config.blindLevel = bl.value; saveConfig(); };
+  const ai = document.getElementById('anteInput');
+  if(ai) ai.onchange = ()=>{ state.config.ante = parseFloat(ai.value)||0; saveConfig(); };
+  app.querySelectorAll('[data-chipmode]').forEach(t=>{
+    t.onclick = ()=>{ state.config.inputChips = !state.config.inputChips; saveConfig(); render(); };
+  });
   app.querySelectorAll('[data-seat-name]').forEach(inp=>{
     inp.onchange = ()=>{ const id=+inp.dataset.seatName; state.config.seats.find(s=>s.id===id).name = inp.value; saveConfig(); };
   });
@@ -709,6 +804,14 @@ function attachHandlers(){
       else if(key==='flop2') state.current.board.flop[2]=obj;
       else if(key==='turn') state.current.board.turn=obj;
       else if(key==='river') state.current.board.river=obj;
+      else if(key.startsWith('sd')){
+        const m = key.match(/^sd(\d+)_(\d)$/);
+        if(m){
+          const sid = +m[1], slot = +m[2];
+          if(!state.current.showdown[sid]) state.current.showdown[sid] = [null,null];
+          state.current.showdown[sid][slot] = obj;
+        }
+      }
       render();
     };
   });
@@ -720,20 +823,44 @@ function attachHandlers(){
       if(act==='fold') logAction(seatId,'Пас',0);
       else if(act==='check') logAction(seatId,'Чек',0);
       else if(act==='call') logAction(seatId,'Колл', maxStreetBet());
-      else if(act==='allin') logAction(seatId,'Ва-банк', maxStreetBet()||1);
-      else if(act==='bet'){ state.current.openBet[seatId]=true; render(); }
+      else if(act==='bet'){ state.current.openBet[seatId]='Ставка'; render(); }
+      else if(act==='allin'){ state.current.openBet[seatId]='Ва-банк'; render(); }
     };
   });
   app.querySelectorAll('[data-quickbet]').forEach(b=>{
-    b.onclick = ()=>{ const [id,amt] = b.dataset.quickbet.split(':'); logAction(+id,'Ставка', parseFloat(amt)); };
+    b.onclick = ()=>{ const [id,amt] = b.dataset.quickbet.split(':'); logAction(+id, state.current.openBet[+id]||'Ставка', parseFloat(amt)); };
   });
   app.querySelectorAll('[data-custombet]').forEach(b=>{
     b.onclick = ()=>{
       const id = +b.dataset.custombet;
       const inp = document.getElementById('customBet-'+id);
-      const val = parseFloat(inp.value);
-      if(val>0) logAction(id,'Ставка', val);
+      let val = parseFloat(inp.value);
+      if(!(val>0)){ alertBanner('Введите сумму больше нуля.'); return; }
+      const chipMode = state.config.inputChips && bbChips();
+      if(chipMode){
+        const conv = chipsToBB(val);
+        if(conv===null || !(conv>0)){ alertBanner('Не удалось пересчитать — проверьте уровень блайндов на вкладке «Стол».'); return; }
+        val = conv;
+      }
+      logAction(id, state.current.openBet[id]||'Ставка', val);
     };
+  });
+  // живой пересчёт фишки -> BB под полем ввода
+  app.querySelectorAll('[id^="customBet-"]').forEach(inp=>{
+    const id = inp.id.replace('customBet-','');
+    inp.addEventListener('input', ()=>{
+      const out = document.getElementById('conv-'+id);
+      if(!out) return;
+      const v = parseFloat(inp.value);
+      if(!(v>0)){ out.textContent=''; return; }
+      if(state.config.inputChips && bbChips()){
+        const conv = chipsToBB(v);
+        out.textContent = v+' фишек = '+conv+' BB';
+      } else {
+        const ch = bbToChips(v);
+        out.textContent = ch ? (v+' BB = '+ch+' фишек') : '';
+      }
+    });
   });
   app.querySelectorAll('[data-closebet]').forEach(b=>{
     b.onclick = ()=>{ delete state.current.openBet[+b.dataset.closebet]; render(); };
