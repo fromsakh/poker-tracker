@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Стол — трекер раздач</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#10151b; --panel:#161e25; --panel-alt:#1c262f; --panel-raise:#212c36;
+    --felt:#1c5c46; --felt-light:#2c7a5e; --felt-dim:#173f32;
+    --gold:#d1a44d; --gold-dim:#8a7040;
+    --red:#c1524a; --red-dim:#5a2e2b;
+    --text:#eef2f0; --text-dim:#8fa19b; --text-faint:#5a6a66;
+    --border:#28333c;
+    --radius:10px;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0; background:var(--bg); color:var(--text);
+    font-family:'IBM Plex Mono',monospace; -webkit-font-smoothing:antialiased;}
+  h1,h2,h3,.disp{font-family:'Space Grotesk',sans-serif;}
+  button{font-family:inherit; cursor:pointer;}
+  .app{max-width:480px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column; padding-bottom:76px;}
+
+  /* header */
+  .topbar{padding:14px 16px 10px; position:sticky; top:0; background:var(--bg); z-index:20; border-bottom:1px solid var(--border);}
+  .topbar .title{font-size:19px; font-weight:700; letter-spacing:.2px;}
+  .topbar .sub{color:var(--text-dim); font-size:12px; margin-top:2px;}
+
+  /* bottom nav */
+  .nav{position:fixed; bottom:0; left:0; right:0; background:var(--panel); border-top:1px solid var(--border);
+       display:flex; max-width:480px; margin:0 auto; z-index:30; padding-bottom:env(safe-area-inset-bottom,0);}
+  .nav button{flex:1; background:none; border:none; color:var(--text-faint); padding:10px 4px 8px; font-size:11px;
+              display:flex; flex-direction:column; align-items:center; gap:3px;}
+  .nav button .ic{font-size:18px;}
+  .nav button.active{color:var(--gold);}
+
+  .panel{padding:14px 16px 18px;}
+  .card{background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:12px; margin-bottom:10px;}
+  .row{display:flex; gap:8px; align-items:center;}
+  .row.between{justify-content:space-between;}
+  label{font-size:11px; color:var(--text-dim); display:block; margin-bottom:4px; text-transform:uppercase; letter-spacing:.4px;}
+  input[type=text],input[type=number],select{
+    background:var(--panel-alt); border:1px solid var(--border); color:var(--text);
+    border-radius:7px; padding:9px 10px; font-family:inherit; font-size:14px; width:100%;
+  }
+  select{appearance:none; -webkit-appearance:none;}
+  .btn{background:var(--panel-alt); border:1px solid var(--border); color:var(--text); border-radius:8px;
+       padding:10px 12px; font-size:13px; font-weight:500; min-height:42px;}
+  .btn:active{background:var(--panel-raise);}
+  .btn.primary{background:var(--felt); border-color:var(--felt-light); color:#fff; font-weight:600;}
+  .btn.primary:active{background:var(--felt-light);}
+  .btn.gold{background:var(--gold); border-color:var(--gold); color:#1a1406; font-weight:700;}
+  .btn.danger{background:var(--red-dim); border-color:var(--red); color:#fff;}
+  .btn.ghost{background:none; border:1px solid var(--border); color:var(--text-dim);}
+  .btn.small{padding:7px 9px; font-size:12px; min-height:34px;}
+  .btn.block{width:100%;}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
+  .grid3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;}
+  .chip{display:inline-flex; align-items:center; gap:4px; background:var(--panel-alt); border:1px solid var(--border);
+        border-radius:20px; padding:4px 10px; font-size:12px; color:var(--text-dim);}
+  .chip.gold{border-color:var(--gold-dim); color:var(--gold);}
+  .empty{color:var(--text-faint); font-size:13px; text-align:center; padding:30px 10px;}
+  .divider{height:1px; background:var(--border); margin:12px 0;}
+
+  /* setup seat rows */
+  .seat-row{display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--border);}
+  .seat-row:last-child{border-bottom:none;}
+  .seat-num{width:22px; height:22px; border-radius:50%; background:var(--panel-alt); border:1px solid var(--border);
+            display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--text-dim); flex-shrink:0;}
+  .seat-row input[type=text]{flex:1; min-width:0;}
+  .toggle{width:36px; height:22px; border-radius:11px; border:1px solid var(--border); background:var(--panel-alt);
+          position:relative; flex-shrink:0;}
+  .toggle .dot{width:16px; height:16px; border-radius:50%; background:var(--text-faint); position:absolute; top:2px; left:2px; transition:.15s;}
+  .toggle.on{background:var(--felt-dim); border-color:var(--felt-light);}
+  .toggle.on .dot{left:16px; background:var(--felt-light);}
+  .toggle.me{width:auto; height:auto; border-radius:7px; padding:5px 8px; font-size:11px; background:var(--panel-alt); color:var(--text-faint);}
+  .toggle.me.on{background:var(--gold-dim); color:var(--gold); border-color:var(--gold-dim);}
+
+  /* hand screen */
+  .street-tabs{display:flex; gap:6px; margin-bottom:10px;}
+  .street-tabs .st{flex:1; text-align:center; padding:7px 4px; border-radius:7px; font-size:11px; letter-spacing:.3px;
+                    background:var(--panel-alt); color:var(--text-faint); border:1px solid var(--border);}
+  .street-tabs .st.done{color:var(--text-dim);}
+  .street-tabs .st.now{background:var(--felt-dim); color:#fff; border-color:var(--felt-light); font-weight:600;}
+  .pot-bar{display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:var(--panel-alt);
+           border:1px solid var(--gold-dim); border-radius:var(--radius); margin-bottom:10px;}
+  .pot-bar .amt{color:var(--gold); font-weight:700; font-size:16px;}
+  .board-cards{display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap;}
+  .card-select-pair{display:flex; gap:3px; background:var(--panel-alt); border:1px solid var(--border); border-radius:7px; padding:4px;}
+  .card-select-pair select{width:52px; padding:5px 2px; font-size:12px; text-align:center;}
+  .board-slot-fixed{background:#fff; color:#111; border-radius:6px; padding:6px 9px; font-weight:700; font-size:14px; min-width:34px; text-align:center;}
+  .board-slot-fixed.red{color:var(--red);}
+
+  .seat-card{background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:10px; margin-bottom:8px;}
+  .seat-card.folded{opacity:.4;}
+  .seat-head{display:flex; align-items:center; gap:6px; margin-bottom:8px;}
+  .pos-badge{background:var(--felt-dim); color:#bfe6d3; font-size:10px; font-weight:700; padding:3px 7px; border-radius:5px; letter-spacing:.3px;}
+  .seat-name{font-weight:600; font-size:14px; flex:1;}
+  .me-tag{background:var(--gold-dim); color:var(--gold); font-size:10px; padding:2px 6px; border-radius:5px; font-weight:700;}
+  .act-row{display:grid; grid-template-columns:repeat(5,1fr); gap:5px;}
+  .act-row button{padding:8px 2px; font-size:11px; border-radius:6px; background:var(--panel-alt); border:1px solid var(--border); color:var(--text);}
+  .act-row button.fold{color:var(--red);}
+  .act-row button.raise{color:var(--gold);}
+  .acted-chip{display:flex; justify-content:space-between; align-items:center; background:var(--panel-alt);
+              border:1px solid var(--border); border-radius:7px; padding:8px 10px; font-size:13px;}
+  .acted-chip .lbl{font-weight:600;}
+  .acted-chip .edit{color:var(--text-faint); font-size:12px;}
+  .size-picker{background:var(--panel-alt); border-radius:7px; padding:8px; margin-top:4px;}
+  .size-picker .row{margin-bottom:6px;}
+  .size-picker input{width:70px; text-align:center;}
+
+  .actions-footer{display:flex; gap:8px; margin-top:4px;}
+
+  /* history */
+  .hand-summary{display:flex; justify-content:space-between; align-items:center; cursor:pointer;}
+  .hand-summary .left{font-size:12px; color:var(--text-dim);}
+  .hand-summary .res{font-weight:700; font-size:14px;}
+  .res.pos{color:#7fd9a6;} .res.neg{color:var(--red);} .res.na{color:var(--text-faint);}
+  .hand-detail{margin-top:8px; padding-top:8px; border-top:1px solid var(--border); font-size:12px; color:var(--text-dim);}
+  .hand-detail .street-log{margin-bottom:6px;}
+  .hand-detail .street-log b{color:var(--text);}
+
+  /* stats */
+  .stat-big{display:flex; justify-content:space-between; align-items:baseline; padding:9px 0; border-bottom:1px solid var(--border);}
+  .stat-big:last-child{border-bottom:none;}
+  .stat-big .lbl{color:var(--text-dim); font-size:12px;}
+  .stat-big .val{font-weight:700; font-size:16px;}
+  table.pl{width:100%; border-collapse:collapse; font-size:12px;}
+  table.pl th{text-align:left; color:var(--text-faint); font-weight:500; padding:6px 4px; border-bottom:1px solid var(--border); font-size:10px; text-transform:uppercase;}
+  table.pl td{padding:7px 4px; border-bottom:1px solid var(--border);}
+  textarea.export{width:100%; height:110px; background:var(--panel-alt); border:1px solid var(--border); color:var(--text-dim);
+                   font-family:inherit; font-size:10px; border-radius:7px; padding:8px;}
+  .banner{background:var(--gold-dim); color:#2a2005; border-radius:8px; padding:8px 10px; font-size:12px; margin-bottom:10px; font-weight:600;}
+</style>
+</head>
+<body>
+<div class="app" id="app"></div>
+
+<script>
+const RANKS = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"];
+const SUITS = ["♠","♥","♦","♣"];
+const RED_SUITS = ["♥","♦"];
+
+let state = {
+  config: { seats: Array.from({length:9},(_,i)=>({id:i+1,name:"Игрок "+(i+1),active:i<9,isMe:false})), buttonSeat:1, blindLevel:"" },
+  hands: [],
+  current: null,
+  tab: 'setup',
+  loaded: false
+};
+
+// ---------- storage layer: Telegram CloudStorage -> localStorage -> memory ----------
+const TG = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+const CS = TG && TG.CloudStorage ? TG.CloudStorage : null;
+const CHUNK = 3500; // CloudStorage limit is 4096 chars per key; keep margin
+
+function csGet(key){ return new Promise((res,rej)=>CS.getItem(key,(e,v)=>e?rej(e):res(v))); }
+function csSet(key,val){ return new Promise((res,rej)=>CS.setItem(key,val,(e,ok)=>e?rej(e):res(ok))); }
+function csRemove(keys){ return new Promise((res,rej)=>CS.removeItems(keys,(e,ok)=>e?rej(e):res(ok))); }
+
+async function storeSet(name, str){
+  if(CS){
+    const chunks = [];
+    for(let i=0;i<str.length;i+=CHUNK) chunks.push(str.slice(i,i+CHUNK));
+    // read old count to clean up leftover chunks
+    let oldCount = 0;
+    try{ oldCount = parseInt(await csGet(name+'_n'))||0; }catch(e){}
+    await csSet(name+'_n', String(chunks.length));
+    for(let i=0;i<chunks.length;i++) await csSet(name+'_'+i, chunks[i]);
+    if(oldCount>chunks.length){
+      const stale=[]; for(let i=chunks.length;i<oldCount;i++) stale.push(name+'_'+i);
+      try{ await csRemove(stale); }catch(e){}
+    }
+    return;
+  }
+  try{ localStorage.setItem('poker_'+name, str); return; }catch(e){}
+  // memory-only: nothing to do, state already holds it
+}
+async function storeGet(name){
+  if(CS){
+    const n = parseInt(await csGet(name+'_n'))||0;
+    if(!n) return null;
+    let out='';
+    for(let i=0;i<n;i++) out += (await csGet(name+'_'+i))||'';
+    return out||null;
+  }
+  try{ return localStorage.getItem('poker_'+name); }catch(e){ return null; }
+}
+
+async function loadAll(){
+  if(TG){ TG.ready(); TG.expand(); }
+  try{
+    const c = await storeGet('config');
+    if(c) state.config = JSON.parse(c);
+  }catch(e){ console.error(e); }
+  try{
+    const h = await storeGet('hands');
+    if(h) state.hands = JSON.parse(h);
+  }catch(e){ console.error(e); }
+  state.loaded = true;
+  render();
+}
+let storageWarned = false;
+function handleStorageError(e){
+  console.error(e);
+  if(!storageWarned){
+    storageWarned = true;
+    alertBannerPersist('Автосохранение не сработало. Данные держатся в памяти, пока приложение открыто. Периодически копируйте «Экспорт» на вкладке «Статистика».');
+  }
+}
+async function saveConfig(){
+  try{ await storeSet('config', JSON.stringify(state.config)); }catch(e){ handleStorageError(e); }
+}
+async function saveHands(){
+  try{ await storeSet('hands', JSON.stringify(state.hands)); }catch(e){ handleStorageError(e); }
+}
+
+// ---------- poker helpers ----------
+function positionsForCount(n){
+  const table = {
+    2:["BTN/SB","BB"],
+    3:["BTN","SB","BB"],
+    4:["BTN","SB","BB","UTG"],
+    5:["BTN","SB","BB","UTG","CO"],
+    6:["BTN","SB","BB","UTG","HJ","CO"],
+    7:["BTN","SB","BB","UTG","LJ","HJ","CO"],
+    8:["BTN","SB","BB","UTG","UTG+1","LJ","HJ","CO"],
+    9:["BTN","SB","BB","UTG","UTG+1","UTG+2","LJ","HJ","CO"],
+  };
+  return table[n] || table[9].slice(0,n);
+}
+function nextActiveSeatId(config, fromId){
+  const active = config.seats.filter(s=>s.active).map(s=>s.id).sort((a,b)=>a-b);
+  if(active.length===0) return fromId;
+  let idx = active.indexOf(fromId);
+  if(idx===-1){
+    // find nearest next
+    for(let i=0;i<active.length;i++){ if(active[i]>fromId){ idx=i-1; break; } }
+    if(idx===-1) idx = active.length-1;
+  }
+  return active[(idx+1)%active.length];
+}
+function buildHandSeats(config){
+  const active = config.seats.filter(s=>s.active).sort((a,b)=>a.id-b.id);
+  if(active.length<2) return null;
+  let btnIdx = active.findIndex(s=>s.id===config.buttonSeat);
+  if(btnIdx===-1) btnIdx = 0;
+  const seatOrder = active.slice(btnIdx).concat(active.slice(0,btnIdx));
+  const positions = positionsForCount(seatOrder.length);
+  const seats = seatOrder.map((s,i)=>({id:s.id,name:s.name,isMe:s.isMe,position:positions[i],folded:false}));
+  const preflop = seats.slice(3).concat(seats.slice(0,3)).map(s=>s.id);
+  const postflop = seats.slice(1).concat(seats.slice(0,1)).map(s=>s.id);
+  return {seats, order:{preflop, postflop}};
+}
+function fmtNum(n){
+  n = Math.round(n*100)/100;
+  return (n>0?"+":"") + (Number.isInteger(n)?n:n.toFixed(1));
+}
+
+// ---------- hand lifecycle ----------
+function startHand(){
+  const built = buildHandSeats(state.config);
+  if(!built){ alertBanner("Нужно минимум 2 активных игрока за столом."); return; }
+  state.current = {
+    id: Date.now(),
+    createdAt: new Date().toISOString(),
+    buttonSeat: state.config.buttonSeat,
+    blindLevel: state.config.blindLevel,
+    seats: built.seats,
+    order: built.order,
+    streetIdx: 0, // 0 preflop 1 flop 2 turn 3 river
+    streets: {preflop:[], flop:[], turn:[], river:[]},
+    board: {flop:[null,null,null], turn:null, river:null},
+    contrib: {}, // cumulative committed BB per seat
+    streetContrib: {}, // this street only
+    myCards: [null,null],
+    openBet: {} // seatId currently in "entering size" mode
+  };
+  state.tab = 'hand';
+  render();
+}
+const STREET_KEYS = ['preflop','flop','turn','river'];
+const STREET_LABELS = {preflop:'Префлоп', flop:'Флоп', turn:'Тёрн', river:'Ривер'};
+
+function currentStreetKey(){ return STREET_KEYS[state.current.streetIdx]; }
+function currentOrder(){ return state.current.streetIdx===0 ? state.current.order.preflop : state.current.order.postflop; }
+function seatById(id){ return state.current.seats.find(s=>s.id===id); }
+function actedThisStreet(seatId){
+  return state.current.streets[currentStreetKey()].find(a=>a.seatId===seatId);
+}
+function maxStreetBet(){
+  const vals = Object.values(state.current.streetContrib);
+  return vals.length? Math.max(...vals) : 0;
+}
+function logAction(seatId, action, amount){
+  const s = seatById(seatId);
+  if(TG && TG.HapticFeedback){ try{ TG.HapticFeedback.impactOccurred('light'); }catch(e){} }
+  state.current.streets[currentStreetKey()].push({seatId, name:s.name, position:s.position, action, amount:amount||0});
+  if(amount){ state.current.streetContrib[seatId] = amount; }
+  if(action==='Пас'){ s.folded = true; }
+  delete state.current.openBet[seatId];
+  render();
+}
+function undoAction(seatId){
+  const arr = state.current.streets[currentStreetKey()];
+  const idx = arr.findIndex(a=>a.seatId===seatId);
+  if(idx>-1){
+    const removed = arr.splice(idx,1)[0];
+    if(removed.action==='Пас'){ seatById(seatId).folded=false; }
+    delete state.current.streetContrib[seatId];
+  }
+  render();
+}
+function nextStreet(){
+  // merge street contrib into cumulative
+  for(const [sid, amt] of Object.entries(state.current.streetContrib)){
+    state.current.contrib[sid] = (state.current.contrib[sid]||0) + amt;
+  }
+  state.current.streetContrib = {};
+  if(state.current.streetIdx<3) state.current.streetIdx++;
+  render();
+}
+function cancelHand(){
+  state.current = null;
+  render();
+}
+function potTotal(){
+  let sum = 0;
+  for(const v of Object.values(state.current.contrib)) sum+=v;
+  for(const v of Object.values(state.current.streetContrib)) sum+=v;
+  return sum;
+}
+function remainingSeats(){
+  return state.current.seats.filter(s=>!s.folded);
+}
+
+let finishForm = null;
+function openFinish(){
+  // merge any open street contrib first
+  for(const [sid, amt] of Object.entries(state.current.streetContrib)){
+    state.current.contrib[sid] = (state.current.contrib[sid]||0) + amt;
+  }
+  state.current.streetContrib = {};
+  const rem = remainingSeats();
+  finishForm = {
+    pot: potTotal(),
+    winners: rem.length===1 ? [rem[0].id] : [],
+    note: ""
+  };
+  render();
+}
+async function saveHand(){
+  const c = state.current;
+  const winners = finishForm.winners;
+  const mySeat = c.seats.find(s=>s.isMe);
+  let myResult = null;
+  if(mySeat){
+    const myContrib = c.contrib[mySeat.id]||0;
+    if(winners.includes(mySeat.id)){
+      myResult = (finishForm.pot/winners.length) - myContrib;
+    } else {
+      myResult = -myContrib;
+    }
+  }
+  const record = {
+    id: c.id, createdAt: c.createdAt, buttonSeat: c.buttonSeat, blindLevel: c.blindLevel,
+    seats: c.seats.map(s=>({id:s.id,name:s.name,position:s.position,isMe:s.isMe})),
+    streets: c.streets, board: {
+      flop: c.board.flop.map(cardStr),
+      turn: cardStr(c.board.turn),
+      river: cardStr(c.board.river)
+    },
+    myCards: (cardStr(c.myCards[0]) && cardStr(c.myCards[1])) ? [cardStr(c.myCards[0]), cardStr(c.myCards[1])] : null,
+    pot: finishForm.pot,
+    winners: winners.map(id=>({id, name: seatById(id).name})),
+    note: finishForm.note,
+    myResultBB: myResult
+  };
+  state.hands.unshift(record);
+  await saveHands();
+  // rotate button
+  state.config.buttonSeat = nextActiveSeatId(state.config, state.config.buttonSeat);
+  await saveConfig();
+  state.current = null;
+  finishForm = null;
+  state.tab = 'hand';
+  render();
+}
+
+let bannerMsg = null;
+let bannerSticky = false;
+function alertBanner(msg){
+  if(bannerSticky) return; // don't override the persistent storage warning
+  bannerMsg = msg; render(); setTimeout(()=>{ if(!bannerSticky){ bannerMsg=null; render(); } }, 3500);
+}
+function alertBannerPersist(msg){ bannerMsg = msg; bannerSticky = true; render(); }
+
+// ---------- rendering ----------
+function render(){
+  const app = document.getElementById('app');
+  if(!state.loaded){ app.innerHTML = '<div class="empty">Загрузка…</div>'; return; }
+  let html = '';
+  html += `<div class="topbar"><div class="title">♠ Стол — трекер раздач</div>
+    <div class="sub">${state.tab==='hand' && state.current ? 'Раздача в процессе' : (state.hands.length? state.hands.length+' раздач сохранено' : 'Финал воскресенья')}</div></div>`;
+  html += '<div class="panel">';
+  if(bannerMsg) html += `<div class="banner"${bannerSticky?' data-dismiss-banner="1"':''}>${bannerMsg}${bannerSticky?' <b style="text-decoration:underline;">(скрыть)</b>':''}</div>`;
+  if(state.tab==='setup') html += renderSetup();
+  else if(state.tab==='hand') html += renderHandTab();
+  else if(state.tab==='history') html += renderHistory();
+  else if(state.tab==='stats') html += renderStats();
+  html += '</div>';
+  html += renderNav();
+  app.innerHTML = html;
+  attachHandlers();
+}
+
+function renderNav(){
+  const tabs = [['setup','⚙','Стол'],['hand','🂡','Раздача'],['history','☰','История'],['stats','▤','Статистика']];
+  return '<div class="nav">' + tabs.map(([k,ic,lbl])=>
+    `<button data-tab="${k}" class="${state.tab===k?'active':''}"><span class="ic">${ic}</span>${lbl}</button>`
+  ).join('') + '</div>';
+}
+
+function renderSetup(){
+  let h = '<div class="card"><label>Уровень блайндов</label>';
+  h += `<input type="text" id="blindLevel" value="${escAttr(state.config.blindLevel)}" placeholder="напр. 100/200"></div>`;
+  h += '<div class="card"><label>Игроки за столом</label>';
+  state.config.seats.forEach(s=>{
+    h += `<div class="seat-row">
+      <div class="seat-num">${s.id}${state.config.buttonSeat===s.id?' ●':''}</div>
+      <input type="text" data-seat-name="${s.id}" value="${escAttr(s.name)}">
+      <div class="toggle me ${s.isMe?'on':''}" data-me="${s.id}">Я</div>
+      <div class="toggle ${s.active?'on':''}" data-active="${s.id}"><div class="dot"></div></div>
+    </div>`;
+  });
+  h += '</div>';
+  h += '<div class="card"><label>Кнопка (BTN)</label><select id="btnSeatSel">';
+  state.config.seats.filter(s=>s.active).forEach(s=>{
+    h += `<option value="${s.id}" ${state.config.buttonSeat===s.id?'selected':''}>${s.id} — ${escAttr(s.name)}</option>`;
+  });
+  h += '</select></div>';
+  h += '<button class="btn primary block" id="startHandBtn" style="margin-top:6px;">Начать раздачу →</button>';
+  return h;
+}
+
+function renderHandTab(){
+  if(!state.current){
+    return '<div class="empty">Раздача не начата.</div><button class="btn primary block" id="startHandBtn2" style="margin-top:10px;">Начать раздачу →</button>';
+  }
+  if(finishForm) return renderFinishForm();
+  const c = state.current;
+  let h = '';
+  h += '<div class="street-tabs">' + STREET_KEYS.map((k,i)=>{
+    const cls = i<c.streetIdx?'done':(i===c.streetIdx?'now':'');
+    return `<div class="st ${cls}">${STREET_LABELS[k]}</div>`;
+  }).join('') + '</div>';
+
+  h += `<div class="pot-bar"><span>Банк</span><span class="amt">${fmtNum(potTotal()).replace('+','')} BB</span></div>`;
+
+  // my cards
+  const mySeat = c.seats.find(s=>s.isMe);
+  if(mySeat){
+    h += '<div class="card"><label>Мои карты '+ (mySeat.folded?'(в пасе)':'') +'</label><div class="board-cards">';
+    h += cardSelectPair('my0', c.myCards[0]);
+    h += cardSelectPair('my1', c.myCards[1]);
+    h += '</div></div>';
+  }
+
+  // board
+  if(c.streetIdx>=1){
+    h += '<div class="card"><label>Борд</label><div class="board-cards">';
+    h += boardSlotOrSelect('flop0', c.board.flop[0], c.streetIdx===1);
+    h += boardSlotOrSelect('flop1', c.board.flop[1], c.streetIdx===1);
+    h += boardSlotOrSelect('flop2', c.board.flop[2], c.streetIdx===1);
+    if(c.streetIdx>=2) h += boardSlotOrSelect('turn', c.board.turn, c.streetIdx===2);
+    if(c.streetIdx>=3) h += boardSlotOrSelect('river', c.board.river, c.streetIdx===3);
+    h += '</div></div>';
+  }
+
+  const order = currentOrder().filter(id=>!seatById(id).folded || actedThisStreet(id));
+  const rem = remainingSeats();
+  if(rem.length===1){
+    h += `<div class="banner">Остался один игрок (${rem[0].name}) — можно завершить раздачу.</div>`;
+  }
+
+  order.forEach(id=>{
+    const s = seatById(id);
+    const acted = actedThisStreet(id);
+    h += `<div class="seat-card ${s.folded?'folded':''}">`;
+    h += `<div class="seat-head"><span class="pos-badge">${s.position}</span><span class="seat-name">${escHtml(s.name)}</span>${s.isMe?'<span class="me-tag">Я</span>':''}</div>`;
+    if(c.openBet[id]){
+      h += renderSizePicker(id);
+    } else if(acted){
+      h += `<div class="acted-chip" data-editact="${id}"><span class="lbl">${acted.action}${acted.amount?' — '+acted.amount+' BB':''}</span><span class="edit">изменить ✎</span></div>`;
+    } else {
+      const toCall = maxStreetBet();
+      h += `<div class="act-row">
+        <button class="fold" data-act="fold" data-seat="${id}">Пас</button>
+        <button data-act="check" data-seat="${id}">Чек</button>
+        <button data-act="call" data-seat="${id}">Колл${toCall?' '+toCall:''}</button>
+        <button class="raise" data-act="bet" data-seat="${id}">Ставка</button>
+        <button data-act="allin" data-seat="${id}">Ва-банк</button>
+      </div>`;
+    }
+    h += '</div>';
+  });
+
+  h += '<div class="actions-footer">';
+  h += `<button class="btn ghost" id="cancelHand">Отменить раздачу</button>`;
+  if(c.streetIdx<3) h += `<button class="btn primary" id="nextStreetBtn" style="flex:1;">Следующая улица →</button>`;
+  h += '</div>';
+  h += `<button class="btn gold block" id="finishHandBtn" style="margin-top:8px;">Завершить раздачу</button>`;
+  return h;
+}
+
+function cardStr(c){ return (c && c.rank && c.suit) ? c.rank+c.suit : null; }
+function cardSelectPair(key, cardObj){
+  const rank = cardObj ? (cardObj.rank||'') : '';
+  const suit = cardObj ? (cardObj.suit||'') : '';
+  let h = `<div class="card-select-pair">`;
+  h += `<select data-cardrank="${key}"><option value="">–</option>`;
+  RANKS.forEach(r=> h += `<option value="${r}" ${rank===r?'selected':''}>${r}</option>`);
+  h += `</select><select data-cardsuit="${key}"><option value="">–</option>`;
+  SUITS.forEach(s=> h += `<option value="${s}" ${suit===s?'selected':''}>${s}</option>`);
+  h += `</select></div>`;
+  return h;
+}
+function boardSlotOrSelect(key, val, editable){
+  const str = cardStr(val);
+  if(!editable && str){
+    const red = RED_SUITS.includes(val.suit);
+    return `<div class="board-slot-fixed ${red?'red':''}">${str}</div>`;
+  }
+  return cardSelectPair(key, val);
+}
+function renderSizePicker(seatId){
+  const bb = maxStreetBet();
+  return `<div class="size-picker">
+    <div class="row">
+      <button class="btn small" data-quickbet="${seatId}:${Math.max(2,bb*2)}">2x</button>
+      <button class="btn small" data-quickbet="${seatId}:${Math.max(3,bb*3)}">3x</button>
+      <button class="btn small" data-quickbet="${seatId}:${(potTotal()).toFixed(1)}">Пот</button>
+      <input type="number" id="customBet-${seatId}" placeholder="BB" step="0.5">
+      <button class="btn small primary" data-custombet="${seatId}">✓</button>
+    </div>
+    <button class="btn small ghost block" data-closebet="${seatId}">Отмена</button>
+  </div>`;
+}
+
+function renderFinishForm(){
+  const c = state.current;
+  const rem = remainingSeats();
+  let h = '<div class="card"><label>Итоговый банк (BB)</label>';
+  h += `<input type="number" id="finalPot" value="${finishForm.pot}" step="0.5"></div>`;
+  h += '<div class="card"><label>Победитель(и)</label>';
+  rem.forEach(s=>{
+    const on = finishForm.winners.includes(s.id);
+    h += `<div class="seat-row"><div class="toggle ${on?'on':''}" data-winner="${s.id}"><div class="dot"></div></div><span>${escHtml(s.name)} (${s.position})</span></div>`;
+  });
+  h += '</div>';
+  h += '<div class="card"><label>Заметка</label><input type="text" id="handNote" placeholder="Ключевое решение, вывод…" value="'+escAttr(finishForm.note)+'"></div>';
+  h += '<div class="actions-footer"><button class="btn ghost" id="backToHand">Назад</button><button class="btn gold" id="confirmSave" style="flex:1;">Сохранить раздачу</button></div>';
+  return h;
+}
+
+function renderHistory(){
+  if(state.hands.length===0) return '<div class="empty">Пока нет сохранённых раздач.</div>';
+  let h = '';
+  state.hands.forEach(hand=>{
+    const board = [...hand.board.flop.filter(Boolean), hand.board.turn, hand.board.river].filter(Boolean).join(' ');
+    const time = new Date(hand.createdAt).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const resClass = hand.myResultBB==null?'na':(hand.myResultBB>=0?'pos':'neg');
+    h += `<div class="card hand-summary" data-expand="${hand.id}">
+      <div class="left">#${hand.id.toString().slice(-4)} · ${time} · ${escHtml(hand.blindLevel||'—')}${board?' · '+board:''}</div>
+      <div class="res ${resClass}">${hand.myResultBB==null?'—':fmtNum(hand.myResultBB)+' BB'}</div>
+    </div>`;
+    if(expandedHand===hand.id){
+      h += '<div class="card" style="margin-top:-14px;"><div class="hand-detail">';
+      if(hand.myCards) h += `<div>Мои карты: <b>${hand.myCards.join(' ')}</b></div>`;
+      h += `<div>Банк: <b>${hand.pot} BB</b> · Победитель: <b>${hand.winners.map(w=>w.name).join(', ')||'—'}</b></div>`;
+      STREET_KEYS.forEach(k=>{
+        if(hand.streets[k].length){
+          h += `<div class="street-log"><b>${STREET_LABELS[k]}:</b> ` + hand.streets[k].map(a=>`${a.name} — ${a.action}${a.amount?' '+a.amount+'BB':''}`).join('; ') + '</div>';
+        }
+      });
+      if(hand.note) h += `<div style="margin-top:6px;">Заметка: ${escHtml(hand.note)}</div>`;
+      h += '</div></div>';
+    }
+  });
+  return h;
+}
+let expandedHand = null;
+
+function renderStats(){
+  const withMe = state.hands.filter(h=>h.myResultBB!=null);
+  const totalHands = state.hands.length;
+  const netResult = withMe.reduce((s,h)=>s+h.myResultBB,0);
+  const avg = withMe.length? netResult/withMe.length : 0;
+  let vpipCount=0, vpipDen=0, pfrCount=0;
+  withMe.forEach(h=>{
+    const myAction = h.streets.preflop.find(a=>{
+      const seat = h.seats.find(s=>s.id===a.seatId); return seat && seat.isMe;
+    });
+    if(myAction){
+      vpipDen++;
+      if(myAction.action!=='Пас') vpipCount++;
+      if(myAction.action==='Ставка'||myAction.action==='Ва-банк') pfrCount++;
+    }
+  });
+  let h = '<div class="card">';
+  h += statRow('Раздач сохранено', totalHands);
+  h += statRow('Мой результат, всего', fmtNum(netResult)+' BB');
+  h += statRow('Средний результат / раздачу', fmtNum(avg)+' BB');
+  h += statRow('VPIP', vpipDen? Math.round(100*vpipCount/vpipDen)+'%' : '—');
+  h += statRow('PFR', vpipDen? Math.round(100*pfrCount/vpipDen)+'%' : '—');
+  h += '</div>';
+
+  // per-player table
+  const playerMap = {};
+  state.hands.forEach(hand=>{
+    hand.streets.preflop.forEach(a=>{
+      const seat = hand.seats.find(s=>s.id===a.seatId);
+      if(!seat || seat.isMe) return;
+      const key = a.name;
+      if(!playerMap[key]) playerMap[key] = {hands:0, vpip:0, pfr:0};
+      playerMap[key].hands++;
+      if(a.action!=='Пас') playerMap[key].vpip++;
+      if(a.action==='Ставка'||a.action==='Ва-банк') playerMap[key].pfr++;
+    });
+  });
+  const players = Object.entries(playerMap).sort((a,b)=>b[1].hands-a[1].hands);
+  if(players.length){
+    h += '<div class="card"><label>Соперники (по префлоп-действиям)</label>';
+    h += '<table class="pl"><tr><th>Игрок</th><th>Раздач</th><th>VPIP</th><th>PFR</th></tr>';
+    players.forEach(([name,st])=>{
+      h += `<tr><td>${escHtml(name)}</td><td>${st.hands}</td><td>${Math.round(100*st.vpip/st.hands)}%</td><td>${Math.round(100*st.pfr/st.hands)}%</td></tr>`;
+    });
+    h += '</table></div>';
+  }
+
+  h += '<div class="card"><label>Экспорт данных</label>';
+  h += `<textarea class="export" readonly onclick="this.select()">${escHtml(JSON.stringify(state.hands,null,1))}</textarea>`;
+  h += '<div class="sub" style="margin-top:6px; font-size:11px; color:var(--text-faint);">Нажмите на поле, чтобы выделить всё и скопировать — сохраните куда-нибудь на всякий случай (заметки, сообщение себе).</div></div>';
+  h += '<div class="card"><label>Импорт (восстановить из бэкапа)</label>';
+  h += '<textarea class="export" id="importBox" placeholder="Вставьте сюда ранее скопированный JSON"></textarea>';
+  h += '<button class="btn ghost block" id="importBtn" style="margin-top:6px;">Загрузить</button></div>';
+  return h;
+}
+function statRow(lbl,val){ return `<div class="stat-big"><span class="lbl">${lbl}</span><span class="val">${val}</span></div>`; }
+
+function escHtml(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function escAttr(s){ return escHtml(s).replace(/"/g,'&quot;'); }
+
+// ---------- event handling ----------
+function attachHandlers(){
+  const app = document.getElementById('app');
+  app.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ state.tab=b.dataset.tab; render(); });
+  app.querySelectorAll('[data-dismiss-banner]').forEach(b=>b.onclick=()=>{ bannerMsg=null; bannerSticky=false; render(); });
+
+  const startBtn = document.getElementById('startHandBtn') || document.getElementById('startHandBtn2');
+  if(startBtn) startBtn.onclick = startHand;
+
+  // setup
+  const bl = document.getElementById('blindLevel');
+  if(bl) bl.onchange = ()=>{ state.config.blindLevel = bl.value; saveConfig(); };
+  app.querySelectorAll('[data-seat-name]').forEach(inp=>{
+    inp.onchange = ()=>{ const id=+inp.dataset.seatName; state.config.seats.find(s=>s.id===id).name = inp.value; saveConfig(); };
+  });
+  app.querySelectorAll('[data-active]').forEach(t=>{
+    t.onclick = ()=>{ const id=+t.dataset.active; const seat=state.config.seats.find(s=>s.id===id); seat.active=!seat.active; saveConfig(); render(); };
+  });
+  app.querySelectorAll('[data-me]').forEach(t=>{
+    t.onclick = ()=>{ const id=+t.dataset.me; state.config.seats.forEach(s=>s.isMe=(s.id===id? !s.isMe : false)); saveConfig(); render(); };
+  });
+  const btnSel = document.getElementById('btnSeatSel');
+  if(btnSel) btnSel.onchange = ()=>{ state.config.buttonSeat = +btnSel.value; saveConfig(); render(); };
+
+  if(!state.current) return;
+
+  // my cards / board cards
+  app.querySelectorAll('[data-cardrank],[data-cardsuit]').forEach(sel=>{
+    sel.onchange = ()=>{
+      const key = sel.dataset.cardrank || sel.dataset.cardsuit;
+      const rankSel = app.querySelector(`[data-cardrank="${key}"]`);
+      const suitSel = app.querySelector(`[data-cardsuit="${key}"]`);
+      const rank = rankSel.value, suit = suitSel.value;
+      const obj = (rank || suit) ? {rank, suit} : null;
+      if(key==='my0') state.current.myCards[0] = obj;
+      else if(key==='my1') state.current.myCards[1] = obj;
+      else if(key==='flop0') state.current.board.flop[0]=obj;
+      else if(key==='flop1') state.current.board.flop[1]=obj;
+      else if(key==='flop2') state.current.board.flop[2]=obj;
+      else if(key==='turn') state.current.board.turn=obj;
+      else if(key==='river') state.current.board.river=obj;
+      render();
+    };
+  });
+
+  app.querySelectorAll('[data-act]').forEach(b=>{
+    b.onclick = ()=>{
+      const seatId = +b.dataset.seat;
+      const act = b.dataset.act;
+      if(act==='fold') logAction(seatId,'Пас',0);
+      else if(act==='check') logAction(seatId,'Чек',0);
+      else if(act==='call') logAction(seatId,'Колл', maxStreetBet());
+      else if(act==='allin') logAction(seatId,'Ва-банк', maxStreetBet()||1);
+      else if(act==='bet'){ state.current.openBet[seatId]=true; render(); }
+    };
+  });
+  app.querySelectorAll('[data-quickbet]').forEach(b=>{
+    b.onclick = ()=>{ const [id,amt] = b.dataset.quickbet.split(':'); logAction(+id,'Ставка', parseFloat(amt)); };
+  });
+  app.querySelectorAll('[data-custombet]').forEach(b=>{
+    b.onclick = ()=>{
+      const id = +b.dataset.custombet;
+      const inp = document.getElementById('customBet-'+id);
+      const val = parseFloat(inp.value);
+      if(val>0) logAction(id,'Ставка', val);
+    };
+  });
+  app.querySelectorAll('[data-closebet]').forEach(b=>{
+    b.onclick = ()=>{ delete state.current.openBet[+b.dataset.closebet]; render(); };
+  });
+  app.querySelectorAll('[data-editact]').forEach(b=>{
+    b.onclick = ()=> undoAction(+b.dataset.editact);
+  });
+
+  const nextBtn = document.getElementById('nextStreetBtn');
+  if(nextBtn) nextBtn.onclick = nextStreet;
+  const cancelBtn = document.getElementById('cancelHand');
+  if(cancelBtn) cancelBtn.onclick = ()=>{ if(confirmish()) cancelHand(); };
+  const finishBtn = document.getElementById('finishHandBtn');
+  if(finishBtn) finishBtn.onclick = openFinish;
+
+  // finish form
+  const finalPot = document.getElementById('finalPot');
+  if(finalPot) finalPot.onchange = ()=>{ finishForm.pot = parseFloat(finalPot.value)||0; };
+  app.querySelectorAll('[data-winner]').forEach(t=>{
+    t.onclick = ()=>{
+      const id=+t.dataset.winner;
+      const i = finishForm.winners.indexOf(id);
+      if(i>-1) finishForm.winners.splice(i,1); else finishForm.winners.push(id);
+      render();
+    };
+  });
+  const noteInp = document.getElementById('handNote');
+  if(noteInp) noteInp.onchange = ()=>{ finishForm.note = noteInp.value; };
+  const backBtn = document.getElementById('backToHand');
+  if(backBtn) backBtn.onclick = ()=>{ finishForm=null; render(); };
+  const confirmBtn = document.getElementById('confirmSave');
+  if(confirmBtn) confirmBtn.onclick = ()=>{
+    if(finishForm.winners.length===0){ alertBanner('Выберите хотя бы одного победителя.'); return; }
+    saveHand();
+  };
+
+  // history expand
+  app.querySelectorAll('[data-expand]').forEach(el=>{
+    el.onclick = ()=>{ const id=+el.dataset.expand; expandedHand = expandedHand===id? null : id; render(); };
+  });
+
+  const importBtn = document.getElementById('importBtn');
+  if(importBtn) importBtn.onclick = ()=>{
+    const box = document.getElementById('importBox');
+    try{
+      const parsed = JSON.parse(box.value);
+      if(!Array.isArray(parsed)) throw new Error('not array');
+      state.hands = parsed;
+      saveHands();
+      alertBanner('Загружено раздач: '+parsed.length);
+    }catch(e){
+      alertBanner('Не получилось прочитать JSON — проверьте, что скопировали целиком.');
+    }
+  };
+}
+function confirmish(){ return true; } // simple, no native confirm() in sandboxed iframe
+
+loadAll();
+</script>
+</body>
+</html>
