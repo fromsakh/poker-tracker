@@ -145,7 +145,7 @@ const SUITS = ["♠","♥","♦","♣"];
 const RED_SUITS = ["♥","♦"];
 
 let state = {
-  config: { seats: Array.from({length:9},(_,i)=>({id:i+1,name:"Игрок "+(i+1),active:i<9,isMe:false})), buttonSeat:1, blindLevel:"" },
+  config: { seats: Array.from({length:9},(_,i)=>({id:i+1,name:"Игрок "+(i+1),active:i<9,isMe:false,stack:""})), buttonSeat:1, blindLevel:"" },
   hands: [],
   current: null,
   tab: 'setup',
@@ -250,7 +250,7 @@ function buildHandSeats(config){
   if(btnIdx===-1) btnIdx = 0;
   const seatOrder = active.slice(btnIdx).concat(active.slice(0,btnIdx));
   const positions = positionsForCount(seatOrder.length);
-  const seats = seatOrder.map((s,i)=>({id:s.id,name:s.name,isMe:s.isMe,position:positions[i],folded:false}));
+  const seats = seatOrder.map((s,i)=>({id:s.id,name:s.name,isMe:s.isMe,stack:s.stack||"",position:positions[i],folded:false}));
   const preflop = seats.slice(3).concat(seats.slice(0,3)).map(s=>s.id);
   const postflop = seats.slice(1).concat(seats.slice(0,1)).map(s=>s.id);
   return {seats, order:{preflop, postflop}};
@@ -367,7 +367,7 @@ async function saveHand(){
   }
   const record = {
     id: c.id, createdAt: c.createdAt, buttonSeat: c.buttonSeat, blindLevel: c.blindLevel,
-    seats: c.seats.map(s=>({id:s.id,name:s.name,position:s.position,isMe:s.isMe})),
+    seats: c.seats.map(s=>({id:s.id,name:s.name,position:s.position,isMe:s.isMe,stack:s.stack||""})),
     streets: c.streets, board: {
       flop: c.board.flop.map(cardStr),
       turn: cardStr(c.board.turn),
@@ -432,10 +432,12 @@ function renderSetup(){
     h += `<div class="seat-row">
       <div class="seat-num">${s.id}${state.config.buttonSeat===s.id?' ●':''}</div>
       <input type="text" data-seat-name="${s.id}" value="${escAttr(s.name)}">
+      <input type="number" data-seat-stack="${s.id}" value="${escAttr(String(s.stack||''))}" placeholder="Стек" style="width:74px; flex:none; text-align:center;">
       <div class="toggle me ${s.isMe?'on':''}" data-me="${s.id}">Я</div>
       <div class="toggle ${s.active?'on':''}" data-active="${s.id}"><div class="dot"></div></div>
     </div>`;
   });
+  h += '<div class="sub" style="font-size:11px; color:var(--text-faint); margin-top:6px;">Стек — в фишках. Обновляйте вручную по ходу игры (например, на паузах между уровнями).</div>';
   h += '</div>';
   h += '<div class="card"><label>Кнопка (BTN)</label><select id="btnSeatSel">';
   state.config.seats.filter(s=>s.active).forEach(s=>{
@@ -490,7 +492,7 @@ function renderHandTab(){
     const s = seatById(id);
     const acted = actedThisStreet(id);
     h += `<div class="seat-card ${s.folded?'folded':''}">`;
-    h += `<div class="seat-head"><span class="pos-badge">${s.position}</span><span class="seat-name">${escHtml(s.name)}</span>${s.isMe?'<span class="me-tag">Я</span>':''}</div>`;
+    h += `<div class="seat-head"><span class="pos-badge">${s.position}</span><span class="seat-name">${escHtml(s.name)}</span>${s.stack?`<span class="chip" style="font-size:10px; padding:2px 7px;">${escHtml(String(s.stack))}</span>`:''}${s.isMe?'<span class="me-tag">Я</span>':''}</div>`;
     if(c.openBet[id]){
       h += renderSizePicker(id);
     } else if(acted){
@@ -647,8 +649,17 @@ function renderStats(){
   h += '<div class="card"><label>Импорт (восстановить из бэкапа)</label>';
   h += '<textarea class="export" id="importBox" placeholder="Вставьте сюда ранее скопированный JSON"></textarea>';
   h += '<button class="btn ghost block" id="importBtn" style="margin-top:6px;">Загрузить</button></div>';
+  h += '<div class="card"><label>Опасная зона</label>';
+  if(deleteArmed){
+    h += '<div class="sub" style="font-size:12px; color:var(--red); margin-bottom:8px;">Точно удалить все '+state.hands.length+' раздач? Это нельзя отменить (кроме восстановления из скопированного бэкапа).</div>';
+    h += '<div class="grid2"><button class="btn ghost" id="deleteCancel">Отмена</button><button class="btn danger" id="deleteConfirm">Да, удалить всё</button></div>';
+  } else {
+    h += '<button class="btn danger block" id="deleteAll">Удалить все раздачи</button>';
+  }
+  h += '</div>';
   return h;
 }
+let deleteArmed = false;
 function statRow(lbl,val){ return `<div class="stat-big"><span class="lbl">${lbl}</span><span class="val">${val}</span></div>`; }
 
 function escHtml(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
@@ -668,6 +679,9 @@ function attachHandlers(){
   if(bl) bl.onchange = ()=>{ state.config.blindLevel = bl.value; saveConfig(); };
   app.querySelectorAll('[data-seat-name]').forEach(inp=>{
     inp.onchange = ()=>{ const id=+inp.dataset.seatName; state.config.seats.find(s=>s.id===id).name = inp.value; saveConfig(); };
+  });
+  app.querySelectorAll('[data-seat-stack]').forEach(inp=>{
+    inp.onchange = ()=>{ const id=+inp.dataset.seatStack; state.config.seats.find(s=>s.id===id).stack = inp.value; saveConfig(); };
   });
   app.querySelectorAll('[data-active]').forEach(t=>{
     t.onclick = ()=>{ const id=+t.dataset.active; const seat=state.config.seats.find(s=>s.id===id); seat.active=!seat.active; saveConfig(); render(); };
@@ -773,6 +787,20 @@ function attachHandlers(){
     }catch(e){
       alertBanner('Не получилось прочитать JSON — проверьте, что скопировали целиком.');
     }
+  };
+
+  const delBtn = document.getElementById('deleteAll');
+  if(delBtn) delBtn.onclick = ()=>{ deleteArmed = true; render(); };
+  const delCancel = document.getElementById('deleteCancel');
+  if(delCancel) delCancel.onclick = ()=>{ deleteArmed = false; render(); };
+  const delConfirm = document.getElementById('deleteConfirm');
+  if(delConfirm) delConfirm.onclick = async ()=>{
+    state.hands = [];
+    deleteArmed = false;
+    expandedHand = null;
+    await saveHands();
+    alertBanner('Все раздачи удалены.');
+    render();
   };
 }
 function confirmish(){ return true; } // simple, no native confirm() in sandboxed iframe
