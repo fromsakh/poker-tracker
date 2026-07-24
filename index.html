@@ -32,6 +32,7 @@
   /* bottom nav */
   .nav{position:fixed; bottom:0; left:0; right:0; background:var(--panel); border-top:1px solid var(--border);
        display:flex; max-width:480px; margin:0 auto; z-index:30; padding-bottom:env(safe-area-inset-bottom,0);}
+  .nav.kbd-hidden{display:none;}
   .nav button{flex:1; background:none; border:none; color:var(--text-faint); padding:10px 4px 8px; font-size:11px;
               display:flex; flex-direction:column; align-items:center; gap:3px;}
   .nav button .ic{font-size:18px;}
@@ -528,9 +529,10 @@ function render(){
   attachHandlers();
 }
 
+let keyboardOpen = false;
 function renderNav(){
   const tabs = [['setup','⚙','Стол'],['hand','🂡','Раздача'],['history','☰','История'],['stats','▤','Статистика']];
-  return '<div class="nav">' + tabs.map(([k,ic,lbl])=>
+  return `<div class="nav${keyboardOpen?' kbd-hidden':''}">` + tabs.map(([k,ic,lbl])=>
     `<button data-tab="${k}" class="${state.tab===k?'active':''}"><span class="ic">${ic}</span>${lbl}</button>`
   ).join('') + '</div>';
 }
@@ -853,11 +855,22 @@ function attachHandlers(){
     inp.addEventListener('keydown', ev=>{
       if(ev.key==='Enter' && inp.tagName==='INPUT'){ ev.preventDefault(); inp.blur(); }
     });
-    // клавиатура перекрывает поле — поднимаем его в видимую часть
+    // клавиатура перекрывает поле — прячем нижнее меню и поднимаем поле в видимую часть
     inp.addEventListener('focus', ()=>{
+      keyboardOpen = true;
+      const nav = document.querySelector('.nav');
+      if(nav) nav.classList.add('kbd-hidden');
       setTimeout(()=>{
         try{ inp.scrollIntoView({block:'center', behavior:'smooth'}); }catch(e){ inp.scrollIntoView(); }
       }, 350);
+    });
+    inp.addEventListener('blur', ()=>{
+      keyboardOpen = false;
+      setTimeout(()=>{
+        if(keyboardOpen) return; // успели сфокусировать другое поле
+        const nav = document.querySelector('.nav');
+        if(nav) nav.classList.remove('kbd-hidden');
+      }, 120);
     });
   });
   app.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ state.tab=b.dataset.tab; render(); });
@@ -895,6 +908,61 @@ function attachHandlers(){
   });
   const btnSel = document.getElementById('btnSeatSel');
   if(btnSel) btnSel.onchange = ()=>{ state.config.buttonSeat = +btnSel.value; saveConfig(); render(); };
+
+  // --- история / экспорт / импорт / удаление (не зависят от активной раздачи) ---
+  app.querySelectorAll('[data-expand]').forEach(el=>{
+    el.onclick = ()=>{ const id=+el.dataset.expand; expandedHand = expandedHand===id? null : id; render(); };
+  });
+
+  const copyBtn = document.getElementById('copyExport');
+  if(copyBtn) copyBtn.onclick = async ()=>{
+    const box = document.getElementById('exportBox');
+    const text = JSON.stringify(state.hands,null,1);
+    try{
+      await navigator.clipboard.writeText(text);
+      alertBanner('Скопировано: '+state.hands.length+' раздач, '+text.length+' символов.');
+    }catch(e){
+      try{
+        box.removeAttribute('readonly');
+        box.focus();
+        box.setSelectionRange(0, box.value.length);
+        document.execCommand('copy');
+        box.setAttribute('readonly','readonly');
+        alertBanner('Скопировано ('+text.length+' символов).');
+      }catch(e2){
+        alertBanner('Не удалось скопировать автоматически — выделите текст вручную.');
+      }
+    }
+  };
+
+  const importBtn = document.getElementById('importBtn');
+  if(importBtn) importBtn.onclick = ()=>{
+    const box = document.getElementById('importBox');
+    try{
+      const parsed = JSON.parse(box.value);
+      if(!Array.isArray(parsed)) throw new Error('not array');
+      state.hands = parsed;
+      saveHands();
+      alertBanner('Загружено раздач: '+parsed.length);
+      render();
+    }catch(e){
+      alertBanner('Не получилось прочитать JSON — проверьте, что скопировали целиком.');
+    }
+  };
+
+  const delBtn = document.getElementById('deleteAll');
+  if(delBtn) delBtn.onclick = ()=>{ deleteArmed = true; render(); };
+  const delCancel = document.getElementById('deleteCancel');
+  if(delCancel) delCancel.onclick = ()=>{ deleteArmed = false; render(); };
+  const delConfirm = document.getElementById('deleteConfirm');
+  if(delConfirm) delConfirm.onclick = async ()=>{
+    state.hands = [];
+    deleteArmed = false;
+    expandedHand = null;
+    await saveHands();
+    alertBanner('Все раздачи удалены.');
+    render();
+  };
 
   if(!state.current) return;
 
@@ -1005,58 +1073,21 @@ function attachHandlers(){
     if(finishForm.winners.length===0){ alertBanner('Выберите хотя бы одного победителя.'); return; }
     saveHand();
   };
-
-  // history expand
-  app.querySelectorAll('[data-expand]').forEach(el=>{
-    el.onclick = ()=>{ const id=+el.dataset.expand; expandedHand = expandedHand===id? null : id; render(); };
-  });
-
-  const copyBtn = document.getElementById('copyExport');
-  if(copyBtn) copyBtn.onclick = async ()=>{
-    const box = document.getElementById('exportBox');
-    const text = JSON.stringify(state.hands,null,1);
-    try{
-      await navigator.clipboard.writeText(text);
-      alertBanner('Скопировано: '+state.hands.length+' раздач, '+text.length+' символов.');
-    }catch(e){
-      box.removeAttribute('readonly');
-      box.focus();
-      box.setSelectionRange(0, box.value.length);
-      try{ document.execCommand('copy'); alertBanner('Скопировано ('+text.length+' символов).'); }
-      catch(e2){ alertBanner('Выделено всё — скопируйте вручную.'); }
-      box.setAttribute('readonly','readonly');
-    }
-  };
-
-  const importBtn = document.getElementById('importBtn');
-  if(importBtn) importBtn.onclick = ()=>{
-    const box = document.getElementById('importBox');
-    try{
-      const parsed = JSON.parse(box.value);
-      if(!Array.isArray(parsed)) throw new Error('not array');
-      state.hands = parsed;
-      saveHands();
-      alertBanner('Загружено раздач: '+parsed.length);
-    }catch(e){
-      alertBanner('Не получилось прочитать JSON — проверьте, что скопировали целиком.');
-    }
-  };
-
-  const delBtn = document.getElementById('deleteAll');
-  if(delBtn) delBtn.onclick = ()=>{ deleteArmed = true; render(); };
-  const delCancel = document.getElementById('deleteCancel');
-  if(delCancel) delCancel.onclick = ()=>{ deleteArmed = false; render(); };
-  const delConfirm = document.getElementById('deleteConfirm');
-  if(delConfirm) delConfirm.onclick = async ()=>{
-    state.hands = [];
-    deleteArmed = false;
-    expandedHand = null;
-    await saveHands();
-    alertBanner('Все раздачи удалены.');
-    render();
-  };
 }
 function confirmish(){ return true; } // simple, no native confirm() in sandboxed iframe
+
+// Подстраховка: ловим появление клавиатуры по сжатию видимой области
+if(window.visualViewport){
+  let maxH = window.visualViewport.height;
+  window.visualViewport.addEventListener('resize', ()=>{
+    const h = window.visualViewport.height;
+    if(h > maxH) maxH = h;
+    const nav = document.querySelector('.nav');
+    if(!nav) return;
+    if(h < maxH - 120){ keyboardOpen = true; nav.classList.add('kbd-hidden'); }
+    else { keyboardOpen = false; nav.classList.remove('kbd-hidden'); }
+  });
+}
 
 loadAll();
 </script>
