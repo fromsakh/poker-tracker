@@ -22,7 +22,7 @@
     font-family:'IBM Plex Mono',monospace; -webkit-font-smoothing:antialiased;}
   h1,h2,h3,.disp{font-family:'Space Grotesk',sans-serif;}
   button{font-family:inherit; cursor:pointer;}
-  .app{max-width:480px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column; padding-bottom:76px;}
+  .app{max-width:480px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column; padding-bottom:340px;}
 
   /* header */
   .topbar{padding:14px 16px 10px; position:sticky; top:0; background:var(--bg); z-index:20; border-bottom:1px solid var(--border);}
@@ -318,41 +318,69 @@ const STREET_LABELS = {preflop:'Префлоп', flop:'Флоп', turn:'Тёрн
 function currentStreetKey(){ return STREET_KEYS[state.current.streetIdx]; }
 function currentOrder(){ return state.current.streetIdx===0 ? state.current.order.preflop : state.current.order.postflop; }
 function seatById(id){ return state.current.seats.find(s=>s.id===id); }
+// последнее действие игрока на текущей улице
 function actedThisStreet(seatId){
-  return state.current.streets[currentStreetKey()].find(a=>a.seatId===seatId);
+  const arr = state.current.streets[currentStreetKey()];
+  for(let i=arr.length-1;i>=0;i--) if(arr[i].seatId===seatId) return arr[i];
+  return null;
+}
+// Пересчёт вкладов и пасов повторным проигрыванием всех записанных действий.
+// Пас не обнуляет уже вложенное — деньги остаются в банке.
+function recompute(){
+  const c = state.current;
+  c.seats.forEach(s=>s.folded=false);
+  c.contrib = {};
+  for(let i=0;i<=c.streetIdx;i++){
+    const key = STREET_KEYS[i];
+    const sc = {};
+    if(i===0) Object.assign(sc, c.blindsPosted);
+    c.streets[key].forEach(a=>{
+      if(a.action==='Пас'){ const s=seatById(a.seatId); if(s) s.folded=true; }
+      else if(a.amount) sc[a.seatId] = a.amount;
+    });
+    if(i < c.streetIdx){
+      for(const [k,v] of Object.entries(sc)) c.contrib[k]=(c.contrib[k]||0)+v;
+    } else {
+      c.streetContrib = sc;
+    }
+  }
 }
 function maxStreetBet(){
   const vals = Object.values(state.current.streetContrib);
   return vals.length? Math.max(...vals) : 0;
 }
+// Нужно ли игроку ходить: ещё не ходил, либо после его хода кто-то повысил
+function needsAction(seatId){
+  const c = state.current;
+  const s = seatById(seatId);
+  if(!s || s.folded) return false;
+  const arr = c.streets[currentStreetKey()];
+  let runMax = (c.streetIdx===0 && Object.keys(c.blindsPosted).length)
+    ? Math.max(...Object.values(c.blindsPosted)) : 0;
+  let lastAggro = -1;
+  arr.forEach((a,i)=>{ if(a.amount && a.amount > runMax){ runMax = a.amount; lastAggro = i; } });
+  let mine = -1;
+  for(let i=arr.length-1;i>=0;i--){ if(arr[i].seatId===seatId){ mine=i; break; } }
+  if(mine===-1) return true;
+  return mine < lastAggro;
+}
 function logAction(seatId, action, amount){
   const s = seatById(seatId);
   if(TG && TG.HapticFeedback){ try{ TG.HapticFeedback.impactOccurred('light'); }catch(e){} }
   state.current.streets[currentStreetKey()].push({seatId, name:s.name, position:s.position, action, amount:amount||0});
-  if(amount){ state.current.streetContrib[seatId] = amount; }
-  if(action==='Пас'){ s.folded = true; }
   delete state.current.openBet[seatId];
+  recompute();
   render();
 }
 function undoAction(seatId){
   const arr = state.current.streets[currentStreetKey()];
-  const idx = arr.findIndex(a=>a.seatId===seatId);
-  if(idx>-1){
-    const removed = arr.splice(idx,1)[0];
-    if(removed.action==='Пас'){ seatById(seatId).folded=false; }
-    const blind = state.current.blindsPosted[seatId];
-    if(state.current.streetIdx===0 && blind){ state.current.streetContrib[seatId] = blind; }
-    else { delete state.current.streetContrib[seatId]; }
-  }
+  for(let i=arr.length-1;i>=0;i--){ if(arr[i].seatId===seatId){ arr.splice(i,1); break; } }
+  recompute();
   render();
 }
 function nextStreet(){
-  // merge street contrib into cumulative
-  for(const [sid, amt] of Object.entries(state.current.streetContrib)){
-    state.current.contrib[sid] = (state.current.contrib[sid]||0) + amt;
-  }
-  state.current.streetContrib = {};
   if(state.current.streetIdx<3) state.current.streetIdx++;
+  recompute();
   render();
 }
 function cancelHand(){
@@ -371,7 +399,7 @@ function remainingSeats(){
 
 // Сколько игрок вложил в банк за раздачу (в BB), включая анте
 function spentBB(c, seatId){
-  let spent = c.contrib[seatId]||0;
+  let spent = (c.contrib[seatId]||0) + (c.streetContrib[seatId]||0);
   if(c.anteBy === seatId) spent += (c.ante||0);
   return spent;
 }
@@ -400,14 +428,9 @@ function stackDeltas(c, pot, winners){
 
 let finishForm = null;
 function openFinish(){
-  // merge any open street contrib first
-  for(const [sid, amt] of Object.entries(state.current.streetContrib)){
-    state.current.contrib[sid] = (state.current.contrib[sid]||0) + amt;
-  }
-  state.current.streetContrib = {};
   const rem = remainingSeats();
   finishForm = {
-    pot: potTotal(),
+    pot: Math.round(potTotal()*10)/10,
     winners: rem.length===1 ? [rem[0].id] : [],
     note: ""
   };
@@ -419,8 +442,7 @@ async function saveHand(){
   const mySeat = c.seats.find(s=>s.isMe);
   let myResult = null;
   if(mySeat){
-    let myContrib = c.contrib[mySeat.id]||0;
-    if(c.anteBy === mySeat.id) myContrib += (c.ante||0);
+    const myContrib = spentBB(c, mySeat.id);
     if(winners.includes(mySeat.id)){
       myResult = (finishForm.pot/winners.length) - myContrib;
     } else {
@@ -586,30 +608,37 @@ function renderHandTab(){
     h += '</div></div>';
   }
 
-  const order = currentOrder().filter(id=>!seatById(id).folded || actedThisStreet(id));
+  const order = currentOrder();
   const rem = remainingSeats();
+  const waiting = order.filter(id=>needsAction(id)).length;
   if(rem.length===1){
     h += `<div class="banner">Остался один игрок (${rem[0].name}) — можно завершить раздачу.</div>`;
+  } else if(waiting===0){
+    h += `<div class="banner">Все уравняли — переходите на следующую улицу.</div>`;
   }
 
   order.forEach(id=>{
     const s = seatById(id);
     const acted = actedThisStreet(id);
-    h += `<div class="seat-card ${s.folded?'folded':''}">`;
-    h += `<div class="seat-head"><span class="pos-badge">${s.position}</span><span class="seat-name">${escHtml(s.name)}</span>${s.stack?`<span class="chip" style="font-size:10px; padding:2px 7px;">${escHtml(String(s.stack))}</span>`:''}${s.isMe?'<span class="me-tag">Я</span>':''}</div>`;
-    if(c.openBet[id]){
+    if(s.folded && !acted && !state.current.blindsPosted[id]) return;
+    const mustAct = needsAction(id);
+    const inPot = state.current.streetContrib[id]||0;
+    h += `<div class="seat-card ${s.folded?'folded':''}" ${mustAct?'style="border-color:var(--felt-light);"':''}>`;
+    h += `<div class="seat-head"><span class="pos-badge">${s.position}</span><span class="seat-name">${escHtml(s.name)}</span>${inPot?`<span class="chip" style="font-size:10px; padding:2px 7px;">в банке ${inPot}</span>`:''}${s.stack?`<span class="chip" style="font-size:10px; padding:2px 7px;">${escHtml(String(s.stack))}</span>`:''}${s.isMe?'<span class="me-tag">Я</span>':''}</div>`;
+    if(state.current.openBet[id]){
       h += renderSizePicker(id);
-    } else if(acted){
-      h += `<div class="acted-chip" data-editact="${id}"><span class="lbl">${acted.action}${acted.amount?' — '+acted.amount+' BB'+(bbToChips(acted.amount)?' ('+bbToChips(acted.amount)+')':''):''}</span><span class="edit">изменить ✎</span></div>`;
-    } else {
+    } else if(mustAct){
       const toCall = maxStreetBet();
+      const need = Math.round((toCall - inPot)*10)/10;
       h += `<div class="act-row">
         <button class="fold" data-act="fold" data-seat="${id}">Пас</button>
         <button data-act="check" data-seat="${id}">Чек</button>
-        <button data-act="call" data-seat="${id}">Колл${toCall?' '+toCall:''}</button>
+        <button data-act="call" data-seat="${id}">Колл${need>0?' '+need:''}</button>
         <button class="raise" data-act="bet" data-seat="${id}">Ставка</button>
         <button data-act="allin" data-seat="${id}">Ва-банк</button>
       </div>`;
+    } else if(acted){
+      h += `<div class="acted-chip" data-editact="${id}"><span class="lbl">${acted.action}${acted.amount?' — '+acted.amount+' BB'+(bbToChips(acted.amount)?' ('+bbToChips(acted.amount)+')':''):''}</span><span class="edit">отменить ✎</span></div>`;
     }
     h += '</div>';
   });
@@ -793,8 +822,9 @@ function renderStats(){
   }
 
   h += '<div class="card"><label>Экспорт данных</label>';
-  h += `<textarea class="export" readonly onclick="this.select()">${escHtml(JSON.stringify(state.hands,null,1))}</textarea>`;
-  h += '<div class="sub" style="margin-top:6px; font-size:11px; color:var(--text-faint);">Нажмите на поле, чтобы выделить всё и скопировать — сохраните куда-нибудь на всякий случай (заметки, сообщение себе).</div></div>';
+  h += `<textarea class="export" id="exportBox" readonly>${escHtml(JSON.stringify(state.hands,null,1))}</textarea>`;
+  h += '<button class="btn gold block" id="copyExport" style="margin-top:6px;">Скопировать всё</button>';
+  h += '<div class="sub" style="margin-top:6px; font-size:11px; color:var(--text-faint);">Сохраните текст себе (например, в «Избранное» в Telegram) — это полный бэкап.</div></div>';
   h += '<div class="card"><label>Импорт (восстановить из бэкапа)</label>';
   h += '<textarea class="export" id="importBox" placeholder="Вставьте сюда ранее скопированный JSON"></textarea>';
   h += '<button class="btn ghost block" id="importBtn" style="margin-top:6px;">Загрузить</button></div>';
@@ -818,10 +848,16 @@ function escAttr(s){ return escHtml(s).replace(/"/g,'&quot;'); }
 function attachHandlers(){
   const app = document.getElementById('app');
   // Enter / "Готово" closes the mobile keyboard instead of leaving it stuck open
-  app.querySelectorAll('input').forEach(inp=>{
-    if(!inp.getAttribute('enterkeyhint')) inp.setAttribute('enterkeyhint','done');
+  app.querySelectorAll('input, textarea').forEach(inp=>{
+    if(inp.tagName==='INPUT' && !inp.getAttribute('enterkeyhint')) inp.setAttribute('enterkeyhint','done');
     inp.addEventListener('keydown', ev=>{
-      if(ev.key==='Enter'){ ev.preventDefault(); inp.blur(); }
+      if(ev.key==='Enter' && inp.tagName==='INPUT'){ ev.preventDefault(); inp.blur(); }
+    });
+    // клавиатура перекрывает поле — поднимаем его в видимую часть
+    inp.addEventListener('focus', ()=>{
+      setTimeout(()=>{
+        try{ inp.scrollIntoView({block:'center', behavior:'smooth'}); }catch(e){ inp.scrollIntoView(); }
+      }, 350);
     });
   });
   app.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ state.tab=b.dataset.tab; render(); });
@@ -974,6 +1010,23 @@ function attachHandlers(){
   app.querySelectorAll('[data-expand]').forEach(el=>{
     el.onclick = ()=>{ const id=+el.dataset.expand; expandedHand = expandedHand===id? null : id; render(); };
   });
+
+  const copyBtn = document.getElementById('copyExport');
+  if(copyBtn) copyBtn.onclick = async ()=>{
+    const box = document.getElementById('exportBox');
+    const text = JSON.stringify(state.hands,null,1);
+    try{
+      await navigator.clipboard.writeText(text);
+      alertBanner('Скопировано: '+state.hands.length+' раздач, '+text.length+' символов.');
+    }catch(e){
+      box.removeAttribute('readonly');
+      box.focus();
+      box.setSelectionRange(0, box.value.length);
+      try{ document.execCommand('copy'); alertBanner('Скопировано ('+text.length+' символов).'); }
+      catch(e2){ alertBanner('Выделено всё — скопируйте вручную.'); }
+      box.setAttribute('readonly','readonly');
+    }
+  };
 
   const importBtn = document.getElementById('importBtn');
   if(importBtn) importBtn.onclick = ()=>{
