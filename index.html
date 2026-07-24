@@ -260,9 +260,10 @@ function fmtNum(n){
   return (n>0?"+":"") + (Number.isInteger(n)?n:n.toFixed(1));
 }
 // Размер BB в фишках из строки уровня, напр. "100/200" -> 200, "100/200/200" -> 200
-function bbChips(){
-  const src = (state.current && state.current.blindLevel) || state.config.blindLevel || '';
-  const nums = String(src).match(/\d+/g);
+function bbChips(src){
+  const s = (src!==undefined && src!==null) ? src
+          : ((state.current && state.current.blindLevel) || state.config.blindLevel || '');
+  const nums = String(s).match(/\d+/g);
   if(!nums || !nums.length) return null;
   const v = nums.length===1 ? parseInt(nums[0]) : parseInt(nums[1]);
   return (v>0) ? v : null;
@@ -368,6 +369,35 @@ function remainingSeats(){
   return state.current.seats.filter(s=>!s.folded);
 }
 
+// Сколько игрок вложил в банк за раздачу (в BB), включая анте
+function spentBB(c, seatId){
+  let spent = c.contrib[seatId]||0;
+  if(c.anteBy === seatId) spent += (c.ante||0);
+  return spent;
+}
+// Изменения стеков в фишках: [{id,name,before,delta,after}]
+function stackDeltas(c, pot, winners){
+  const bb = bbChips(c.blindLevel);
+  if(!bb) return null;
+  const share = winners.length ? pot/winners.length : 0;
+  const out = [];
+  c.seats.forEach(s=>{
+    const cfg = state.config.seats.find(x=>x.id===s.id);
+    const raw = cfg ? cfg.stack : '';
+    const before = (raw==='' || raw==null) ? null : parseFloat(raw);
+    let deltaBB = -spentBB(c, s.id);
+    if(winners.includes(s.id)) deltaBB += share;
+    const delta = Math.round(deltaBB*bb);
+    if(delta===0 && before===null) return;
+    out.push({
+      id:s.id, name:s.name, before,
+      delta,
+      after: (before===null || isNaN(before)) ? null : Math.round(before+delta)
+    });
+  });
+  return out;
+}
+
 let finishForm = null;
 function openFinish(){
   // merge any open street contrib first
@@ -420,12 +450,32 @@ async function saveHand(){
   };
   state.hands.unshift(record);
   await saveHands();
+
+  // пересчёт стеков
+  let busted = [];
+  if(state.config.autoStacks !== false){
+    const deltas = stackDeltas(c, finishForm.pot, winners);
+    if(deltas){
+      deltas.forEach(d=>{
+        if(d.after===null) return;
+        const cfg = state.config.seats.find(x=>x.id===d.id);
+        if(cfg){
+          cfg.stack = String(Math.max(0, d.after));
+          if(d.after<=0) busted.push(d.name);
+        }
+      });
+    } else {
+      alertBanner('Стеки не пересчитаны: не задан уровень блайндов.');
+    }
+  }
+
   // rotate button
   state.config.buttonSeat = nextActiveSeatId(state.config, state.config.buttonSeat);
   await saveConfig();
   state.current = null;
   finishForm = null;
   state.tab = 'hand';
+  if(busted.length) alertBannerPersist('Стек обнулился: '+busted.join(', ')+'. Если игрок выбыл — выключите его на вкладке «Стол».');
   render();
 }
 
@@ -468,7 +518,8 @@ function renderSetup(){
   h += `<div><label>Уровень блайндов</label><input type="text" id="blindLevel" value="${escAttr(state.config.blindLevel)}" placeholder="напр. 100/200"></div>`;
   h += `<div><label>Анте от BB (в BB)</label><input type="number" id="anteInput" step="0.1" inputmode="decimal" value="${escAttr(String(state.config.ante||''))}" placeholder="1"></div>`;
   h += '</div><div class="sub" style="font-size:11px; color:var(--text-faint); margin-top:6px;">Блайнды (0.5 + 1 BB) кладутся автоматически. При анте на большом блайнде размером в блайнд поставьте <b>1</b> — игрок на BB положит в банк 2 BB, а колл для остальных останется 1 BB.</div>';
-  h += `<div class="divider"></div><div class="row between"><div><div style="font-size:13px;">Вводить ставки в фишках</div><div style="font-size:11px; color:var(--text-faint);">${bbChips()?'1 BB = '+bbChips()+' фишек':'укажите уровень блайндов выше'}</div></div><div class="toggle ${state.config.inputChips?'on':''}" data-chipmode="1"><div class="dot"></div></div></div></div>`;
+  h += `<div class="divider"></div><div class="row between"><div><div style="font-size:13px;">Вводить ставки в фишках</div><div style="font-size:11px; color:var(--text-faint);">${bbChips()?'1 BB = '+bbChips()+' фишек':'укажите уровень блайндов выше'}</div></div><div class="toggle ${state.config.inputChips?'on':''}" data-chipmode="1"><div class="dot"></div></div></div>`;
+  h += `<div class="divider"></div><div class="row between"><div><div style="font-size:13px;">Пересчитывать стеки автоматически</div><div style="font-size:11px; color:var(--text-faint);">после каждой сохранённой раздачи</div></div><div class="toggle ${state.config.autoStacks!==false?'on':''}" data-autostacks="1"><div class="dot"></div></div></div></div>`;
   h += '<div class="card"><label>Игроки за столом</label>';
   state.config.seats.forEach(s=>{
     h += `<div class="seat-row">
@@ -640,6 +691,25 @@ function renderFinishForm(){
     h += '<div class="sub" style="font-size:11px; color:var(--text-faint);">Оставьте пустым, если карты не открывались.</div></div>';
   }
   h += '<div class="card"><label>Заметка</label><input type="text" id="handNote" placeholder="Ключевое решение, вывод…" enterkeyhint="done" value="'+escAttr(finishForm.note)+'"></div>';
+  if(state.config.autoStacks !== false){
+    const deltas = stackDeltas(c, finishForm.pot, finishForm.winners);
+    h += '<div class="card"><label>Стеки после раздачи</label>';
+    if(!deltas){
+      h += '<div style="font-size:12px; color:var(--red);">Не задан уровень блайндов — стеки не пересчитаются.</div>';
+    } else if(!finishForm.winners.length){
+      h += '<div style="font-size:12px; color:var(--text-faint);">Выберите победителя, чтобы увидеть пересчёт.</div>';
+    } else {
+      deltas.filter(d=>d.delta!==0).forEach(d=>{
+        const cls = d.delta>0?'pos':'neg';
+        h += `<div class="row between" style="padding:5px 0; border-bottom:1px solid var(--border); font-size:13px;">
+          <span>${escHtml(d.name)}</span>
+          <span><span class="res ${cls}">${d.delta>0?'+':''}${d.delta}</span>
+          <span style="color:var(--text-faint); font-size:12px;"> → ${d.after===null?'стек не задан':d.after}</span></span></div>`;
+      });
+      h += '<div class="sub" style="font-size:11px; color:var(--text-faint); margin-top:6px;">Применится при сохранении. Стеки можно поправить вручную на вкладке «Стол».</div>';
+    }
+    h += '</div>';
+  }
   h += '<div class="actions-footer"><button class="btn ghost" id="backToHand">Назад</button><button class="btn gold" id="confirmSave" style="flex:1;">Сохранить раздачу</button></div>';
   return h;
 }
@@ -771,6 +841,9 @@ function attachHandlers(){
   if(ai) ai.onchange = ()=>{ state.config.ante = parseFloat(ai.value)||0; saveConfig(); };
   app.querySelectorAll('[data-chipmode]').forEach(t=>{
     t.onclick = ()=>{ state.config.inputChips = !state.config.inputChips; saveConfig(); render(); };
+  });
+  app.querySelectorAll('[data-autostacks]').forEach(t=>{
+    t.onclick = ()=>{ state.config.autoStacks = (state.config.autoStacks===false); saveConfig(); render(); };
   });
   app.querySelectorAll('[data-seat-name]').forEach(inp=>{
     inp.onchange = ()=>{ const id=+inp.dataset.seatName; state.config.seats.find(s=>s.id===id).name = inp.value; saveConfig(); };
