@@ -156,54 +156,139 @@ let state = {
 // ---------- storage layer: Telegram CloudStorage -> localStorage -> memory ----------
 const TG = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
 const CS = TG && TG.CloudStorage ? TG.CloudStorage : null;
-const CHUNK = 3500; // CloudStorage limit is 4096 chars per key; keep margin
+const MAXKEY = 3900;   // лимит CloudStorage 4096 символов на ключ
+const BATCH  = 40;
 
 function csGet(key){ return new Promise((res,rej)=>CS.getItem(key,(e,v)=>e?rej(e):res(v))); }
+function csGetMany(keys){ return new Promise((res,rej)=>CS.getItems(keys,(e,v)=>e?rej(e):res(v))); }
 function csSet(key,val){ return new Promise((res,rej)=>CS.setItem(key,val,(e,ok)=>e?rej(e):res(ok))); }
 function csRemove(keys){ return new Promise((res,rej)=>CS.removeItems(keys,(e,ok)=>e?rej(e):res(ok))); }
 
-async function storeSet(name, str){
-  if(CS){
-    const chunks = [];
-    for(let i=0;i<str.length;i+=CHUNK) chunks.push(str.slice(i,i+CHUNK));
-    // read old count to clean up leftover chunks
-    let oldCount = 0;
-    try{ oldCount = parseInt(await csGet(name+'_n'))||0; }catch(e){}
-    await csSet(name+'_n', String(chunks.length));
-    for(let i=0;i<chunks.length;i++) await csSet(name+'_'+i, chunks[i]);
-    if(oldCount>chunks.length){
-      const stale=[]; for(let i=chunks.length;i<oldCount;i++) stale.push(name+'_'+i);
-      try{ await csRemove(stale); }catch(e){}
-    }
-    return;
-  }
-  try{ localStorage.setItem('poker_'+name, str); return; }catch(e){}
-  // memory-only: nothing to do, state already holds it
+// --- конфиг (маленький, один ключ) ---
+async function saveConfig(){
+  try{
+    const s = JSON.stringify(state.config);
+    if(CS) await csSet('cfg', s); else localStorage.setItem('poker_cfg', s);
+  }catch(e){ handleStorageError(e); }
 }
-async function storeGet(name){
-  if(CS){
-    const n = parseInt(await csGet(name+'_n'))||0;
-    if(!n) return null;
-    let out='';
-    for(let i=0;i<n;i++) out += (await csGet(name+'_'+i))||'';
-    return out||null;
+async function loadConfig(){
+  try{
+    const s = CS ? await csGet('cfg') : localStorage.getItem('poker_cfg');
+    if(s) return JSON.parse(s);
+  }catch(e){ console.error(e); }
+  return null;
+}
+
+// --- раздачи: по одному ключу на раздачу, поэтому сохранение не зависит от объёма истории ---
+function handKey(id){ return 'h'+id; }
+function trimToFit(rec){
+  let s = JSON.stringify(rec);
+  if(s.length > MAXKEY){
+    rec = {...rec, note: String(rec.note||'').slice(0,150)};
+    s = JSON.stringify(rec);
   }
-  try{ return localStorage.getItem('poker_'+name); }catch(e){ return null; }
+  return s;
+}
+async function saveOneHand(rec){
+  try{
+    if(!CS){ localStorage.setItem('poker_hands', JSON.stringify(state.hands)); return; }
+    await csSet(handKey(rec.id), trimToFit(rec));
+    await csSet('idx', JSON.stringify(state.hands.map(h=>h.id)));
+  }catch(e){ handleStorageError(e); }
+}
+async function saveAllHands(){
+  try{
+    if(!CS){ localStorage.setItem('poker_hands', JSON.stringify(state.hands)); return; }
+    for(const rec of state.hands) await csSet(handKey(rec.id), trimToFit(rec));
+    await csSet('idx', JSON.stringify(state.hands.map(h=>h.id)));
+  }catch(e){ handleStorageError(e); }
+}
+async function deleteAllHands(ids){
+  try{
+    if(!CS){ localStorage.removeItem('poker_hands'); return; }
+    for(let i=0;i<ids.length;i+=BATCH){
+      try{ await csRemove(ids.slice(i,i+BATCH).map(handKey)); }catch(e){ console.error(e); }
+    }
+    await csSet('idx','[]');
+  }catch(e){ handleStorageError(e); }
+}
+async function loadHands(){
+  if(!CS){
+    try{ const s = localStorage.getItem('poker_hands'); return s?JSON.parse(s):[]; }catch(e){ return []; }
+  }
+  let ids = [];
+  try{ const raw = await csGet('idx'); if(raw) ids = JSON.parse(raw)||[]; }catch(e){}
+  if(!ids.length){
+    // миграция со старого формата (единый блоб, порезанный на чанки)
+    try{
+      const n = parseInt(await csGet('hands_n'))||0;
+      if(n){
+        let out='';
+        for(let i=0;i<n;i++) out += (await csGet('hands_'+i))||'';
+        const arr = JSON.parse(out)||[];
+        if(arr.length){
+          state.hands = arr;
+          await saveAllHands();
+          const stale=[]; for(let i=0;i<n;i++) stale.push('hands_'+i);
+          stale.push('hands_n');
+          for(let i=0;i<stale.length;i+=BATCH){ try{ await csRemove(stale.slice(i,i+BATCH)); }catch(e){} }
+        }
+        return arr;
+      }
+    }catch(e){ console.error(e); }
+    return [];
+  }
+  const out=[];
+  for(let i=0;i<ids.length;i+=BATCH){
+    const keys = ids.slice(i,i+BATCH).map(handKey);
+    try{
+      const vals = await csGetMany(keys);
+      keys.forEach(k=>{ if(vals && vals[k]){ try{ out.push(JSON.parse(vals[k])); }catch(e){} } });
+    }catch(e){ console.error(e); }
+  }
+  return out;
+}
+
+// --- незавершённая раздача: переживает закрытие приложения ---
+let curSaveTimer = null;
+function saveCurrentSoon(){
+  clearTimeout(curSaveTimer);
+  curSaveTimer = setTimeout(()=>{
+    const c = state.current;
+    try{
+      if(!c){ if(CS) csSet('cur',''); else localStorage.removeItem('poker_cur'); return; }
+      const s = JSON.stringify(c);
+      if(s.length > MAXKEY) return;
+      if(CS) csSet('cur', s); else localStorage.setItem('poker_cur', s);
+    }catch(e){}
+  }, 400);
+}
+async function loadCurrent(){
+  try{
+    const s = CS ? await csGet('cur') : localStorage.getItem('poker_cur');
+    if(s) return JSON.parse(s);
+  }catch(e){}
+  return null;
 }
 
 async function loadAll(){
   if(TG){ TG.ready(); TG.expand(); }
-  try{
-    const c = await storeGet('config');
-    if(c) state.config = JSON.parse(c);
-  }catch(e){ console.error(e); }
-  try{
-    const h = await storeGet('hands');
-    if(h) state.hands = JSON.parse(h);
-  }catch(e){ console.error(e); }
+  const cfg = await loadConfig();
+  if(cfg) state.config = cfg;
+  state.hands = await loadHands();
+  const cur = await loadCurrent();
+  if(cur && cur.seats){
+    state.current = cur;
+    if(!state.current.openBet) state.current.openBet = {};
+    if(!state.current.showdown) state.current.showdown = {};
+    try{ recompute(); }catch(e){ console.error(e); }
+    state.tab = 'hand';
+  }
   state.loaded = true;
   render();
+  if(cur && cur.seats) alertBanner('Восстановлена незавершённая раздача.');
 }
+
 let storageWarned = false;
 function handleStorageError(e){
   console.error(e);
@@ -211,12 +296,6 @@ function handleStorageError(e){
     storageWarned = true;
     alertBannerPersist('Автосохранение не сработало. Данные держатся в памяти, пока приложение открыто. Периодически копируйте «Экспорт» на вкладке «Статистика».');
   }
-}
-async function saveConfig(){
-  try{ await storeSet('config', JSON.stringify(state.config)); }catch(e){ handleStorageError(e); }
-}
-async function saveHands(){
-  try{ await storeSet('hands', JSON.stringify(state.hands)); }catch(e){ handleStorageError(e); }
 }
 
 // ---------- poker helpers ----------
@@ -311,6 +390,7 @@ function startHand(){
     openBet: {}
   };
   state.tab = 'hand';
+  saveCurrentSoon();
   render();
 }
 const STREET_KEYS = ['preflop','flop','turn','river'];
@@ -371,6 +451,7 @@ function logAction(seatId, action, amount){
   state.current.streets[currentStreetKey()].push({seatId, name:s.name, position:s.position, action, amount:amount||0});
   delete state.current.openBet[seatId];
   recompute();
+  saveCurrentSoon();
   render();
 }
 function undoAction(seatId){
@@ -382,10 +463,12 @@ function undoAction(seatId){
 function nextStreet(){
   if(state.current.streetIdx<3) state.current.streetIdx++;
   recompute();
+  saveCurrentSoon();
   render();
 }
 function cancelHand(){
   state.current = null;
+  saveCurrentSoon();
   render();
 }
 function potTotal(){
@@ -472,7 +555,7 @@ async function saveHand(){
     myResultBB: myResult
   };
   state.hands.unshift(record);
-  await saveHands();
+  await saveOneHand(record);
 
   // пересчёт стеков
   let busted = [];
@@ -496,6 +579,7 @@ async function saveHand(){
   state.config.buttonSeat = nextActiveSeatId(state.config, state.config.buttonSeat);
   await saveConfig();
   state.current = null;
+  saveCurrentSoon();
   finishForm = null;
   state.tab = 'hand';
   if(busted.length) alertBannerPersist('Стек обнулился: '+busted.join(', ')+'. Если игрок выбыл — выключите его на вкладке «Стол».');
@@ -942,7 +1026,7 @@ function attachHandlers(){
       const parsed = JSON.parse(box.value);
       if(!Array.isArray(parsed)) throw new Error('not array');
       state.hands = parsed;
-      saveHands();
+      saveAllHands();
       alertBanner('Загружено раздач: '+parsed.length);
       render();
     }catch(e){
@@ -956,10 +1040,11 @@ function attachHandlers(){
   if(delCancel) delCancel.onclick = ()=>{ deleteArmed = false; render(); };
   const delConfirm = document.getElementById('deleteConfirm');
   if(delConfirm) delConfirm.onclick = async ()=>{
+    const oldIds = state.hands.map(h=>h.id);
     state.hands = [];
     deleteArmed = false;
     expandedHand = null;
-    await saveHands();
+    await deleteAllHands(oldIds);
     alertBanner('Все раздачи удалены.');
     render();
   };
@@ -989,6 +1074,7 @@ function attachHandlers(){
           state.current.showdown[sid][slot] = obj;
         }
       }
+      saveCurrentSoon();
       render();
     };
   });
